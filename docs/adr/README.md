@@ -15,3 +15,6 @@ supersedes the old one rather than editing history.
 | [0003](0003-native-rendered-ui.md) | Native-rendered UI, no WebView | Accepted |
 | [0004](0004-zig-native-sdk-zero-config.md) | Zig + Native SDK on the zero-config build | Accepted |
 | [0005](0005-engine-value-representation.md) | Engine value representation & version-tagged decoder boundary | Accepted |
+| [0006](0006-inspector-builder-view.md) | Inspector as a Zig builder view (not `.native` markup) | Accepted |
+| [0007](0007-trusted-ingestion.md) | Trusted-ingestion limits for user-opened traces | Accepted |
+| [0008](0008-websocket-transport.md) | WebSocket transport: a hand-rolled RFC 6455 subset | Accepted |
