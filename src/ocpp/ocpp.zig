@@ -6,8 +6,10 @@
 
 pub const types = @import("types.zig");
 pub const normalizer = @import("normalizer.zig");
+pub const parser = @import("parser.zig");
 
 test {
     _ = types;
     _ = normalizer;
+    _ = parser;
 }
