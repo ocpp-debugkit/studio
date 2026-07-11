@@ -60,6 +60,10 @@ jobs:
           version: 0.16.0
       - name: Install GTK + Xvfb
         run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev xvfb dbus
+      - name: Allow unprivileged user namespaces (bwrap dbus-proxy sandbox)
+        # Ubuntu 24.04 runners restrict unprivileged userns via AppArmor,
+        # which breaks the SDK's bubblewrap-sandboxed dbus-proxy.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install Native SDK CLI
         run: npm install -g @native-sdk/cli@0.4.1
       - name: Build headless app (automation enabled)
