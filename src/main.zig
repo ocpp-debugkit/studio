@@ -13,6 +13,7 @@ const runner = @import("runner");
 const native_sdk = @import("native_sdk");
 const workspace = @import("ui/workspace.zig");
 const inspector = @import("ui/inspector.zig");
+const cli = @import("cli.zig");
 
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
@@ -58,6 +59,11 @@ const InspectorApp = native_sdk.UiApp(Model, Msg);
 const max_trace_file_bytes: usize = 256 * 1024 * 1024;
 
 pub fn main(init: std.process.Init) !void {
+    // Second face: if argv names a CLI subcommand, run it to completion and exit
+    // BEFORE any window/app setup — no GUI is created. A bare trace path (or no
+    // args) returns null and falls through to the inspector below.
+    if (cli.maybeRun(init)) |code| std.process.exit(code);
+
     // The app struct (and the Model) are multi-MB: `create` heap-allocates and
     // constructs in place so neither rides the stack.
     const app_state = try InspectorApp.create(std.heap.page_allocator, .{
@@ -111,4 +117,5 @@ test {
     _ = @import("tests.zig");
     _ = @import("ocpp/ocpp.zig");
     _ = @import("ui/ui.zig");
+    _ = @import("cli.zig");
 }

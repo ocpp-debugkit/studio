@@ -8,11 +8,10 @@
 
 ## Active milestone
 
-**S4 — Analysis parity+ (0.3.0): in progress.** S0–S3 are complete (the engine
-and the native inspector). S4 reaches parity with the toolkit's analysis surface;
-report generation (#41), anonymize-on-export (#42), semantic trace diff (#43), and
-replay (#44 — engine + manual-scrub transport) have landed. Only the headless CLI
-(#45) remains (see [ROADMAP.md](ROADMAP.md)).
+**S4 — Analysis parity+ (0.3.0): complete.** S0–S4 are done. S4 reached parity
+with the toolkit's analysis surface — report generation (#41), anonymize (#42),
+semantic diff (#43), replay (#44), and a headless CLI in the same binary (#45).
+Next up is **S5 — Live capture** (the flagship; see [ROADMAP.md](ROADMAP.md)).
 
 ## What's done
 
@@ -117,9 +116,9 @@ Deferred out of S3: interactive open — native dialog + drag-drop (#33) — and
 timeline viewport scroll on jump (session/failure), both of which need an ejected
 runner (see ADR-0006). Tracked as follow-ups, not blockers.
 
-### S4 — Analysis parity+ (0.3.0) 🚧
+### S4 — Analysis parity+ (0.3.0) ✅
 
-In progress. Landed so far:
+Every issue landed:
 
 - **Report generation (#41)** — `src/ocpp/report.zig` renders a trace analysis as
   Markdown and self-contained HTML, mirroring the toolkit's reporter (the same six
@@ -150,12 +149,20 @@ In progress. Landed so far:
   (filtered) events, reusing `select_event`. Real wall-clock auto-play is deferred
   to the runner-eject bucket (#33), since the zero-config runner exposes no timer
   effect (spiked).
+- **Headless CLI (#45)** — `src/cli.zig`, a second face in the same binary:
+  `inspect` / `report` / `diff` / `anonymize` / `ci` / `scenario`, dispatched in
+  `main` before any window opens (no runner eject — the spike confirmed a clean
+  `main`-branch). A testable render core (pure `render*(bytes) → bytes`) under a
+  thin argv / `init.io` / stdout shell; `conformance/harness.zig` grew a callable
+  `runAll` / `runNamed` for `ci` / `scenario`. Parity and the intentional
+  differences are documented in [docs/cli-parity.md](docs/cli-parity.md).
 
 ## What's next
 
-Remaining **S4 — Analysis parity+ (0.3.0)** work: the headless CLI subcommands
-(#45) — a clean `main`-branch (argv → engine → stdout), per the spike. Then
-**S5 — Live capture** (the flagship).
+**S5 — Live capture ⭐ (0.4.0)** — the flagship: a live WebSocket proxy between a
+charge point and its CSMS, decoding OCPP frames in flight, running detection as
+events stream, recording to the canonical trace format, and surfacing it in a
+live timeline with OS notifications on critical failures.
 
 ## Known blockers / decisions pending
 
@@ -170,5 +177,5 @@ Remaining **S4 — Analysis parity+ (0.3.0)** work: the headless CLI subcommands
 | `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports (#41) + anonymize (#42) + diff (#43) + replay core (#44); O(n) detection pending (#36) |
 | `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44) |
 | `capture` (live proxy) | ⬜ not started (S5) |
-| `cli` (headless) | ⬜ not started (S4) |
+| `cli` (headless) | ✅ inspect/report/diff/anonymize/ci/scenario (#45) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |
