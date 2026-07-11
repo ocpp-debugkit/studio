@@ -244,18 +244,62 @@ fn formatTime(arena: std.mem.Allocator, ts: ?i64) []const u8 {
     }) catch "--";
 }
 
-// --- detail pane: minimal for now; #30 enriches it -------------------------
+// --- detail pane: message inspector + session panel (#30) ------------------
+//
+// The selected event, fully unpacked: its normalized fields, the session it
+// correlates into (with a jump-to-first-event control), a disclosure tree over
+// the payload, and the raw OCPP-J array pretty-printed. The whole pane scrolls.
+
+/// Payload-tree display bounds (the id space is `workspace.max_payload_tree_nodes`).
+/// Depth/breadth keep a hostile payload from ballooning the widget-node budget;
+/// past them the tree shows a compact "... N more" / "... truncated" marker.
+const max_payload_tree_depth: usize = 6;
+const max_payload_tree_breadth: usize = 40;
+/// Per-row indentation (points) for the flat disclosure tree.
+const tree_indent: f32 = 14;
+/// Cap on the pretty-printed raw JSON so one event can't produce a giant text
+/// layout; payloads are small, this only bites pathological input.
+const max_raw_bytes: usize = 8 * 1024;
 
 fn detailPane(ui: *Ui, t: *const LoadedTrace) Node {
-    if (t.selected_event) |idx| {
-        if (idx < t.events.len) return eventDetail(ui, t.events[idx]);
-    }
-    return ui.column(.{ .min_width = 280, .grow = 1, .main = .center, .cross = .center, .padding = 24 }, .{
+    const idx = t.selected_event orelse return detailPlaceholder(ui);
+    if (idx >= t.events.len) return detailPlaceholder(ui);
+    return ui.scroll(.{ .min_width = 300, .grow = 1 }, .{
+        ui.column(.{ .gap = 14, .padding = 16 }, .{
+            eventDetail(ui, t, idx),
+        }),
+    });
+}
+
+fn detailPlaceholder(ui: *Ui) Node {
+    return ui.column(.{ .min_width = 300, .grow = 1, .main = .center, .cross = .center, .padding = 24 }, .{
         ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, "Select an event to inspect it"),
     });
 }
 
-fn eventDetail(ui: *Ui, e: types.Event) Node {
+fn eventDetail(ui: *Ui, t: *const LoadedTrace, idx: usize) Node {
+    const e = t.events[idx];
+    return ui.column(.{ .gap = 14 }, .{
+        ui.text(.{ .size = .heading }, e.action orelse e.message_type.toWire()),
+        normalizedSection(ui, e),
+        sessionSection(ui, t, e.id),
+        payloadSection(ui, t, e),
+        rawSection(ui, e),
+    });
+}
+
+/// A titled, separated block. Every detail section shares this frame.
+fn section(ui: *Ui, title: []const u8, body: Node) Node {
+    return ui.column(.{ .gap = 6 }, .{
+        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, title),
+        ui.separator(.{}),
+        body,
+    });
+}
+
+// --- normalized fields -----------------------------------------------------
+
+fn normalizedSection(ui: *Ui, e: types.Event) Node {
     var rows: [7]Node = undefined;
     var n: usize = 0;
     rows[n] = detailRow(ui, "Event", e.id);
@@ -276,17 +320,359 @@ fn eventDetail(ui: *Ui, e: types.Event) Node {
         rows[n] = detailRow(ui, "Error", desc);
         n += 1;
     }
-    return ui.column(.{ .min_width = 280, .grow = 1, .gap = 10, .padding = 16 }, .{
-        ui.text(.{ .size = .heading }, e.action orelse e.message_type.toWire()),
-        ui.column(.{ .gap = 6 }, rows[0..n]),
-    });
+    return section(ui, "Details", ui.column(.{ .gap = 6 }, rows[0..n]));
 }
 
 fn detailRow(ui: *Ui, label: []const u8, value: []const u8) Node {
+    return detailRowColored(ui, label, value, null);
+}
+
+fn detailRowColored(ui: *Ui, label: []const u8, value: []const u8, color: ?canvas.ColorTokenName) Node {
+    const value_tokens: canvas.StyleTokenRefs = if (color) |c| .{ .foreground = c } else .{};
     return ui.row(.{ .gap = 8, .cross = .start }, .{
         ui.text(.{ .width = 96, .style_tokens = .{ .foreground = .text_muted } }, label),
-        ui.text(.{ .grow = 1 }, value),
+        ui.text(.{ .grow = 1, .style_tokens = value_tokens }, value),
     });
+}
+
+// --- session panel ---------------------------------------------------------
+
+fn sessionSection(ui: *Ui, t: *const LoadedTrace, event_id: []const u8) Node {
+    const si = findSessionOf(t, event_id) orelse return section(
+        ui,
+        "Session",
+        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, "Not part of a correlated session"),
+    );
+    const s = t.sessions[si];
+
+    var rows: [7]Node = undefined;
+    var n: usize = 0;
+    rows[n] = detailRow(ui, "Session", s.session_id);
+    n += 1;
+    rows[n] = detailRow(ui, "Transaction", optInt(ui.arena, s.transaction_id));
+    n += 1;
+    rows[n] = detailRowColored(ui, "Status", s.status.toWire(), statusColor(s.status));
+    n += 1;
+    rows[n] = detailRow(ui, "Connector", optInt(ui.arena, s.connector_id));
+    n += 1;
+    rows[n] = detailRow(ui, "Started", formatTime(ui.arena, s.start_time));
+    n += 1;
+    rows[n] = detailRow(ui, "Ended", formatTime(ui.arena, s.end_time));
+    n += 1;
+    rows[n] = detailRow(ui, "Events", std.fmt.allocPrint(ui.arena, "{d}", .{s.events.len}) catch "?");
+    n += 1;
+
+    return section(ui, "Session", ui.column(.{ .gap = 6 }, .{
+        ui.column(.{ .gap = 6 }, rows[0..n]),
+        ui.row(.{}, .{
+            ui.button(.{ .on_press = .{ .select_session = si }, .variant = .ghost, .size = .sm }, "Jump to first event"),
+        }),
+    }));
+}
+
+/// The index of the session containing `event_id`, or null. Sessions hold
+/// id-bearing copies of their events, so membership is an id match.
+fn findSessionOf(t: *const LoadedTrace, event_id: []const u8) ?usize {
+    for (t.sessions, 0..) |s, i| {
+        for (s.events) |e| {
+            if (std.mem.eql(u8, e.id, event_id)) return i;
+        }
+    }
+    return null;
+}
+
+fn statusColor(s: types.Status) canvas.ColorTokenName {
+    return switch (s) {
+        .completed => .success,
+        .aborted => .destructive,
+        .active => .info,
+    };
+}
+
+fn optInt(arena: std.mem.Allocator, v: ?i64) []const u8 {
+    const n = v orelse return "none";
+    return std.fmt.allocPrint(arena, "{d}", .{n}) catch "none";
+}
+
+// --- payload tree ----------------------------------------------------------
+
+/// Flat-list disclosure tree over a JSON payload. Rows are emitted in pre-order;
+/// a collapsed container simply omits its descendants' rows. Node ids are the
+/// pre-order rank over the *bounded* structure and are independent of collapse
+/// state (the walk always advances the id counter over every in-bounds node,
+/// whether or not it emits a row), so a collapse bit always names the same node
+/// across rebuilds.
+const TreeWalk = struct {
+    ui: *Ui,
+    collapsed: *const workspace.PayloadCollapse,
+    list: *std.ArrayList(Node),
+    /// Next pre-order id to hand out.
+    id: usize = 0,
+    /// Set once the id space (`workspace.max_payload_tree_nodes`) is exhausted.
+    truncated: bool = false,
+};
+
+fn payloadSection(ui: *Ui, t: *const LoadedTrace, e: types.Event) Node {
+    switch (e.payload) {
+        .null => return section(ui, "Payload", emptyNote(ui, "No payload")),
+        .object => |o| if (o.count() == 0) return section(ui, "Payload", emptyNote(ui, "Empty object {}")),
+        .array => |a| if (a.items.len == 0) return section(ui, "Payload", emptyNote(ui, "Empty array []")),
+        else => {},
+    }
+
+    var list: std.ArrayList(Node) = .empty;
+    var w = TreeWalk{ .ui = ui, .collapsed = &t.payload_collapsed, .list = &list };
+    if (isContainer(e.payload)) {
+        // Expose the payload's fields directly (no synthetic "payload" root row).
+        walkChildren(&w, e.payload, 0, true);
+    } else {
+        walkPayload(&w, "value", e.payload, 0, true);
+    }
+    if (w.truncated) {
+        list.append(ui.arena, moreRow(ui, "... payload truncated", 0)) catch {
+            ui.failed = true;
+        };
+    }
+    return section(ui, "Payload", ui.tree(.{ .semantics = .{ .label = "payload" } }, list.items));
+}
+
+fn emptyNote(ui: *Ui, text: []const u8) Node {
+    return ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, text);
+}
+
+/// Emit (and id-count) one JSON value as a tree row plus, when it is an expanded
+/// container, its children. `visible` is false inside a collapsed ancestor — the
+/// subtree still consumes ids so identities stay stable, but no rows are added.
+fn walkPayload(w: *TreeWalk, key: []const u8, value: std.json.Value, depth: usize, visible: bool) void {
+    if (w.id >= workspace.max_payload_tree_nodes) {
+        w.truncated = true;
+        return;
+    }
+    const id = w.id;
+    w.id += 1;
+
+    const child_count = jsonLen(value);
+    const expandable = isContainer(value) and child_count > 0 and depth + 1 < max_payload_tree_depth;
+    const expanded = expandable and !w.collapsed.isSet(id);
+
+    if (visible) {
+        w.list.append(w.ui.arena, treeRow(w.ui, key, value, depth, id, expandable, expanded, child_count)) catch {
+            w.ui.failed = true;
+        };
+    }
+
+    if (!isContainer(value) or child_count == 0 or depth + 1 >= max_payload_tree_depth) return;
+    walkChildren(w, value, depth + 1, visible and expanded);
+}
+
+/// Walk a container's children at `depth`, bounded by breadth. `child_visible`
+/// gates emission; ids advance regardless.
+fn walkChildren(w: *TreeWalk, value: std.json.Value, depth: usize, child_visible: bool) void {
+    const total = jsonLen(value);
+    const shown = @min(total, max_payload_tree_breadth);
+    switch (value) {
+        .array => |a| {
+            var i: usize = 0;
+            while (i < shown) : (i += 1) {
+                const label = std.fmt.allocPrint(w.ui.arena, "{d}", .{i}) catch "?";
+                walkPayload(w, label, a.items[i], depth, child_visible);
+            }
+        },
+        .object => |o| {
+            const keys = o.keys();
+            const vals = o.values();
+            var i: usize = 0;
+            while (i < shown) : (i += 1) {
+                walkPayload(w, keys[i], vals[i], depth, child_visible);
+            }
+        },
+        else => {},
+    }
+    if (child_visible and total > shown) {
+        const label = std.fmt.allocPrint(w.ui.arena, "... {d} more", .{total - shown}) catch "... more";
+        w.list.append(w.ui.arena, moreRow(w.ui, label, depth)) catch {
+            w.ui.failed = true;
+        };
+    }
+}
+
+fn treeRow(ui: *Ui, key: []const u8, value: std.json.Value, depth: usize, id: usize, expandable: bool, expanded: bool, child_count: usize) Node {
+    const indent: f32 = @as(f32, @floatFromInt(depth)) * tree_indent;
+    return ui.row(.{
+        .semantics = .{ .role = .treeitem, .label = key },
+        .expanded = if (expandable) expanded else null,
+        .on_press = if (expandable) Msg{ .toggle_payload_node = id } else null,
+        .on_toggle = if (expandable) Msg{ .toggle_payload_node = id } else null,
+        .padding = 3,
+        .gap = 6,
+        .cross = .center,
+    }, .{
+        ui.text(.{ .width = indent }, ""),
+        disclosureGlyph(ui, expandable, expanded),
+        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, key),
+        ui.text(.{ .grow = 1 }, valueSummary(ui.arena, value, child_count)),
+    });
+}
+
+/// The leading disclosure slot: a chevron for expandable rows (the icon name is
+/// comptime, so the two states are separate calls), a blank spacer for leaves.
+fn disclosureGlyph(ui: *Ui, expandable: bool, expanded: bool) Node {
+    if (!expandable) return ui.text(.{ .width = 16 }, "");
+    if (expanded) return ui.icon(.{
+        .width = 16,
+        .style_tokens = .{ .foreground = .text_muted },
+        .semantics = .{ .label = "collapse" },
+    }, "chevron-down");
+    return ui.icon(.{
+        .width = 16,
+        .style_tokens = .{ .foreground = .text_muted },
+        .semantics = .{ .label = "expand" },
+    }, "chevron-right");
+}
+
+/// A non-interactive marker row (breadth/depth truncation), aligned to the key
+/// column at `depth`.
+fn moreRow(ui: *Ui, text: []const u8, depth: usize) Node {
+    const indent: f32 = @as(f32, @floatFromInt(depth)) * tree_indent + 16;
+    return ui.row(.{ .padding = 3, .gap = 6, .cross = .center }, .{
+        ui.text(.{ .width = indent }, ""),
+        ui.text(.{ .grow = 1, .style_tokens = .{ .foreground = .text_muted } }, text),
+    });
+}
+
+fn isContainer(value: std.json.Value) bool {
+    return value == .array or value == .object;
+}
+
+fn jsonLen(value: std.json.Value) usize {
+    return switch (value) {
+        .array => |a| a.items.len,
+        .object => |o| o.count(),
+        else => 0,
+    };
+}
+
+/// The compact right-hand summary of a tree row: a size for containers, the
+/// scalar itself for leaves.
+fn valueSummary(arena: std.mem.Allocator, value: std.json.Value, child_count: usize) []const u8 {
+    return switch (value) {
+        .object => if (child_count == 0) "{}" else std.fmt.allocPrint(arena, "{{ {d} }}", .{child_count}) catch "{ ... }",
+        .array => if (child_count == 0) "[]" else std.fmt.allocPrint(arena, "[ {d} ]", .{child_count}) catch "[ ... ]",
+        else => jsonScalar(arena, value),
+    };
+}
+
+/// A scalar JSON value rendered for display: strings quoted, everything else as
+/// written. Long strings are cut at a UTF-8 boundary so nothing renders as tofu.
+fn jsonScalar(arena: std.mem.Allocator, value: std.json.Value) []const u8 {
+    return switch (value) {
+        .null => "null",
+        .bool => |b| if (b) "true" else "false",
+        .integer => |n| std.fmt.allocPrint(arena, "{d}", .{n}) catch "?",
+        .float => |f| std.fmt.allocPrint(arena, "{d}", .{f}) catch "?",
+        .number_string => |s| truncateDisplay(arena, s, 96),
+        .string => |s| std.fmt.allocPrint(arena, "\"{s}\"", .{truncateDisplay(arena, s, 96)}) catch "\"...\"",
+        else => "",
+    };
+}
+
+fn truncateDisplay(arena: std.mem.Allocator, s: []const u8, max: usize) []const u8 {
+    if (s.len <= max) return s;
+    var cut = max;
+    // Back off any UTF-8 continuation bytes so we never split a codepoint.
+    while (cut > 0 and (s[cut] & 0xC0) == 0x80) cut -= 1;
+    return std.fmt.allocPrint(arena, "{s}...", .{s[0..cut]}) catch s[0..cut];
+}
+
+// --- raw OCPP-J array ------------------------------------------------------
+
+fn rawSection(ui: *Ui, e: types.Event) Node {
+    var buf: std.ArrayList(u8) = .empty;
+    writeJson(ui.arena, &buf, e.raw_message, 0);
+    if (buf.items.len >= max_raw_bytes) {
+        buf.appendSlice(ui.arena, "\n... (truncated)") catch {};
+    }
+    return section(ui, "Raw message", ui.text(.{ .grow = 1 }, buf.items));
+}
+
+/// Minimal pretty-printer over `std.json.Value` → 2-space-indented JSON. Bounded
+/// by `max_raw_bytes`; used for the raw view only (never for engine output), so
+/// display-faithful escaping is all it owes.
+fn writeJson(a: std.mem.Allocator, buf: *std.ArrayList(u8), value: std.json.Value, depth: usize) void {
+    if (buf.items.len >= max_raw_bytes) return;
+    switch (value) {
+        .null => append(a, buf, "null"),
+        .bool => |b| append(a, buf, if (b) "true" else "false"),
+        .integer => |n| {
+            var tmp: [24]u8 = undefined;
+            append(a, buf, std.fmt.bufPrint(&tmp, "{d}", .{n}) catch "0");
+        },
+        .float => |f| {
+            var tmp: [32]u8 = undefined;
+            append(a, buf, std.fmt.bufPrint(&tmp, "{d}", .{f}) catch "0");
+        },
+        .number_string => |s| append(a, buf, s),
+        .string => |s| writeJsonString(a, buf, s),
+        .array => |arr| {
+            if (arr.items.len == 0) return append(a, buf, "[]");
+            append(a, buf, "[\n");
+            for (arr.items, 0..) |item, i| {
+                if (buf.items.len >= max_raw_bytes) break;
+                writeIndent(a, buf, depth + 1);
+                writeJson(a, buf, item, depth + 1);
+                if (i + 1 < arr.items.len) append(a, buf, ",");
+                append(a, buf, "\n");
+            }
+            writeIndent(a, buf, depth);
+            append(a, buf, "]");
+        },
+        .object => |obj| {
+            if (obj.count() == 0) return append(a, buf, "{}");
+            append(a, buf, "{\n");
+            const keys = obj.keys();
+            const vals = obj.values();
+            for (keys, vals, 0..) |k, v, i| {
+                if (buf.items.len >= max_raw_bytes) break;
+                writeIndent(a, buf, depth + 1);
+                writeJsonString(a, buf, k);
+                append(a, buf, ": ");
+                writeJson(a, buf, v, depth + 1);
+                if (i + 1 < keys.len) append(a, buf, ",");
+                append(a, buf, "\n");
+            }
+            writeIndent(a, buf, depth);
+            append(a, buf, "}");
+        },
+    }
+}
+
+fn writeJsonString(a: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) void {
+    append(a, buf, "\"");
+    for (s) |c| switch (c) {
+        '"' => append(a, buf, "\\\""),
+        '\\' => append(a, buf, "\\\\"),
+        '\n' => append(a, buf, "\\n"),
+        '\r' => append(a, buf, "\\r"),
+        '\t' => append(a, buf, "\\t"),
+        else => {
+            if (c < 0x20) {
+                var tmp: [8]u8 = undefined;
+                append(a, buf, std.fmt.bufPrint(&tmp, "\\u{x:0>4}", .{c}) catch "");
+            } else {
+                buf.append(a, c) catch {};
+            }
+        },
+    };
+    append(a, buf, "\"");
+}
+
+fn writeIndent(a: std.mem.Allocator, buf: *std.ArrayList(u8), depth: usize) void {
+    var i: usize = 0;
+    while (i < depth) : (i += 1) append(a, buf, "  ");
+}
+
+fn append(a: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) void {
+    buf.appendSlice(a, s) catch {};
 }
 
 // --- status bar ------------------------------------------------------------

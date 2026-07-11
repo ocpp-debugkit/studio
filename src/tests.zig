@@ -54,6 +54,52 @@ fn findRowWithText(widget: canvas.Widget, text: []const u8) ?canvas.Widget {
     return null;
 }
 
+fn countRole(widget: canvas.Widget, role: canvas.WidgetRole) usize {
+    var n: usize = if (widget.semantics.role == role) 1 else 0;
+    for (widget.children) |child| n += countRole(child, role);
+    return n;
+}
+
+/// The first `text` widget whose content starts with `prefix` — the raw JSON
+/// view is one text node holding the whole pretty-printed array.
+fn findTextPrefix(widget: canvas.Widget, prefix: []const u8) ?canvas.Widget {
+    if (widget.kind == .text and std.mem.startsWith(u8, widget.text, prefix)) return widget;
+    for (widget.children) |child| {
+        if (findTextPrefix(child, prefix)) |found| return found;
+    }
+    return null;
+}
+
+/// The first `treeitem` row whose own label text equals `key` — used to grab a
+/// payload-tree row (flat rows, so a row's subtree holds only its own texts).
+fn findTreeItem(widget: canvas.Widget, key: []const u8) ?canvas.Widget {
+    if (widget.semantics.role == .treeitem and findByText(widget, .text, key) != null) return widget;
+    for (widget.children) |child| {
+        if (findTreeItem(child, key)) |found| return found;
+    }
+    return null;
+}
+
+/// A single-Call trace whose MeterValues payload exercises every tree shape:
+/// scalars, a nested object, an array, an over-deep chain, and an over-wide
+/// array. `wide` holds 50 elements (past the breadth bound of 40); `deep`
+/// nests 6 levels (past the depth bound). Caller owns nothing — `openBytes`
+/// copies it.
+fn nestedTraceBytes(a: std.mem.Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(a, "{\"events\":[{\"message\":[2,\"m1\",\"MeterValues\",{" ++
+        "\"connectorId\":1," ++
+        "\"meterValue\":[{\"timestamp\":\"2024-01-01T00:00:00Z\",\"sampledValue\":[{\"value\":\"42.5\",\"unit\":\"Wh\"}]}]," ++
+        "\"deep\":{\"a\":{\"b\":{\"c\":{\"d\":{\"e\":{\"f\":\"tooDeep\"}}}}}}," ++
+        "\"wide\":[");
+    for (0..50) |i| {
+        if (i > 0) try buf.appendSlice(a, ",");
+        try buf.append(a, '0' + @as(u8, @intCast(i % 10)));
+    }
+    try buf.appendSlice(a, "]}]}]}");
+    return buf.items;
+}
+
 test "the empty workspace offers the open-sample affordance" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -110,6 +156,117 @@ test "clicking a timeline row selects the event and the detail pane reflects it"
     tree = try buildTree(arena, &model);
     _ = try expectByText(tree.root, .text, "evt-0001"); // the event id
     _ = try expectByText(tree.root, .text, "Message ID"); // a detail-row label
+}
+
+test "selecting an event renders every message-inspector section" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .open_sample);
+    workspace.update(&model, .{ .select_event = 0 });
+
+    const tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "Details");
+    _ = try expectByText(tree.root, .text, "Session");
+    _ = try expectByText(tree.root, .text, "Payload");
+    _ = try expectByText(tree.root, .text, "Raw message");
+    _ = try expectByText(tree.root, .button, "Jump to first event");
+    // The raw view pretty-prints the OCPP-J array into one text node opening
+    // with the array bracket on its own line.
+    const raw = findTextPrefix(tree.root, "[\n") orelse return error.WidgetNotFound;
+    try testing.expect(std.mem.indexOf(u8, raw.text, "BootNotification") != null);
+    // The payload renders as a disclosure tree with at least one treeitem row.
+    try testing.expect(countRole(tree.root, .treeitem) > 0);
+}
+
+test "the session panel reflects the event's session and jumps to the first event" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .open_sample);
+    // Select a mid-session event (the StopTransaction Call, well past event 0).
+    workspace.update(&model, .{ .select_event = 12 });
+
+    var tree = try buildTree(arena, &model);
+    // The sample's one session carries transactionId 100001 and completed.
+    _ = try expectByText(tree.root, .text, "100001");
+    _ = try expectByText(tree.root, .text, "completed");
+
+    // Jump-to-first-event selects the session's first event (the BootNotification).
+    const jump = try expectByText(tree.root, .button, "Jump to first event");
+    main.update(&model, tree.msgForPointer(jump.id, .up).?);
+    try testing.expectEqual(@as(?usize, 0), model.activeTrace().?.selected_event);
+
+    tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "evt-0001");
+}
+
+test "the payload tree renders object, array, and scalar shapes" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    model.openBytes("nested.json", try nestedTraceBytes(arena));
+    workspace.update(&model, .{ .select_event = 0 });
+
+    const tree = try buildTree(arena, &model);
+    // Object field (scalar), a nested array, and an array-index row.
+    _ = try expectByText(tree.root, .text, "connectorId");
+    _ = try expectByText(tree.root, .text, "meterValue");
+    _ = try expectByText(tree.root, .text, "sampledValue");
+    // A scalar string leaf renders quoted; a number renders bare.
+    _ = try expectByText(tree.root, .text, "\"Wh\"");
+    _ = try expectByText(tree.root, .text, "1"); // connectorId's value
+}
+
+test "the payload tree bounds depth and breadth" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    model.openBytes("nested.json", try nestedTraceBytes(arena));
+    workspace.update(&model, .{ .select_event = 0 });
+
+    const tree = try buildTree(arena, &model);
+    // The over-deep chain stops before its leaf: "tooDeep" never renders.
+    try testing.expect(findByText(tree.root, .text, "\"tooDeep\"") == null);
+    // The over-wide array shows a truncation marker instead of all 50 elements.
+    try testing.expect(findByText(tree.root, .text, "... 10 more") != null);
+    // The whole tree stays within the tracked node budget.
+    try testing.expect(countRole(tree.root, .treeitem) <= workspace.max_payload_tree_nodes);
+}
+
+test "toggling a payload container collapses its children" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    model.openBytes("nested.json", try nestedTraceBytes(arena));
+    workspace.update(&model, .{ .select_event = 0 });
+
+    var tree = try buildTree(arena, &model);
+    // "timestamp" lives under meterValue → visible while expanded.
+    _ = try expectByText(tree.root, .text, "timestamp");
+    const mv = findTreeItem(tree.root, "meterValue") orelse return error.WidgetNotFound;
+
+    // Collapse meterValue through its row's on_press.
+    main.update(&model, tree.msgForPointer(mv.id, .up).?);
+    tree = try buildTree(arena, &model);
+    // meterValue itself stays; its descendant "timestamp" is gone.
+    _ = try expectByText(tree.root, .text, "meterValue");
+    try testing.expect(findByText(tree.root, .text, "timestamp") == null);
 }
 
 test "the virtual window stays viewport-sized at dataset scale" {
@@ -181,6 +338,10 @@ test "the inspector view passes the accessibility sweep (empty and loaded)" {
     try canvas.expectA11yAuditSweepClean(testing.allocator, tree.root, sweep);
 
     workspace.update(&model, .open_sample); // loaded state
+    tree = try buildTree(arena, &model);
+    try canvas.expectA11yAuditSweepClean(testing.allocator, tree.root, sweep);
+
+    workspace.update(&model, .{ .select_event = 5 }); // detail pane: tree, session, raw
     tree = try buildTree(arena, &model);
     try canvas.expectA11yAuditSweepClean(testing.allocator, tree.root, sweep);
 }

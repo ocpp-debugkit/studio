@@ -89,10 +89,18 @@ toolkit's:
   detection is capped at 50k events (several rules are O(n²)); past it the trace
   is fully inspectable but detection is skipped and the UI says so — the O(n)
   detection rewrite is tracked in #36.
+- **Message inspector + session panel (#30)** — selecting a timeline row unpacks
+  the event in the detail pane: normalized fields, the session it correlates
+  into (transaction id, status, connector, start/stop, event count) with a
+  jump-to-first-event control, a model-owned disclosure tree over the payload
+  (`ui.tree` + the ARIA keymap, bounded in depth/breadth/node-count for hostile
+  input), and the raw OCPP-J array pretty-printed. Jump selects the session's
+  first event (highlighting it and driving the panels); the literal timeline
+  viewport scroll rides the same runtime-eject as #33.
 
-Still ahead in S3: the full message inspector + session panel (#30), the failure
-panel (#31), and search / filter (#32). Interactive open (native dialog +
-drag-drop) is deferred to #33 — it needs an ejected runner (see ADR-0006).
+Still ahead in S3: the failure panel (#31) and search / filter (#32).
+Interactive open (native dialog + drag-drop) is deferred to #33 — it needs an
+ejected runner (see ADR-0006).
 
 ## What's next
 
@@ -110,7 +118,7 @@ wall-clock replay, and a headless CLI mode.
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ S2 + trusted ingestion (#29); O(n) detection pending (#36) |
-| `ui` (native views) | 🚧 shell + timeline (S3, #27–#28); panes + search next |
+| `ui` (native views) | 🚧 shell + timeline + message inspector (S3, #27–#28, #30); failure panel + search next |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |
