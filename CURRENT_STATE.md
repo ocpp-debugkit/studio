@@ -97,8 +97,14 @@ toolkit's:
   input), and the raw OCPP-J array pretty-printed. Jump selects the session's
   first event (highlighting it and driving the panels); the literal timeline
   viewport scroll rides the same runtime-eject as #33.
+- **Failure panel (#31)** — a fixed-height drawer under the timeline lists every
+  detected failure, ranked critical → warning → info (then by first event), each
+  with its severity, code, and description. Selecting one expands its remediation
+  steps and affected events (accordion) and jumps to its primary event, so a
+  failure and its evidence line up. A clean trace shows a positive
+  "no failures detected" state; the status bar carries the severity breakdown.
 
-Still ahead in S3: the failure panel (#31) and search / filter (#32).
+Still ahead in S3: search / filter (#32), which closes the milestone.
 Interactive open (native dialog + drag-drop) is deferred to #33 — it needs an
 ejected runner (see ADR-0006).
 
@@ -118,7 +124,7 @@ wall-clock replay, and a headless CLI mode.
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ S2 + trusted ingestion (#29); O(n) detection pending (#36) |
-| `ui` (native views) | 🚧 shell + timeline + message inspector (S3, #27–#28, #30); failure panel + search next |
+| `ui` (native views) | 🚧 shell + timeline + inspector + failure panel (S3, #27–#28, #30–#31); search next |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |

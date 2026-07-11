@@ -81,15 +81,20 @@ fn tabStrip(ui: *Ui, model: *const Model) Node {
 fn activeBody(ui: *Ui, model: *const Model) Node {
     const t = model.activeTrace().?;
     if (t.isError()) return errorPanel(ui, t);
-    // Timeline (left) / detail (right), a model-owned splitter that echoes each
-    // drag back through `timeline_split`.
-    return ui.split(.{
-        .grow = 1,
-        .value = model.timeline_split,
-        .on_resize = Ui.valueMsg(.timeline_resized),
-    }, .{
-        timelinePane(ui, t),
-        detailPane(ui, t),
+    // Timeline (left) / detail (right) fill the space above a fixed-height
+    // failure drawer. `split` is horizontal-only, so the vertical stack is a
+    // column: the split grows, the drawer keeps its height.
+    return ui.column(.{ .grow = 1 }, .{
+        ui.split(.{
+            .grow = 1,
+            .value = model.timeline_split,
+            .on_resize = Ui.valueMsg(.timeline_resized),
+        }, .{
+            timelinePane(ui, t),
+            detailPane(ui, t),
+        }),
+        ui.separator(.{}),
+        failuresPanel(ui, t),
     });
 }
 
@@ -675,6 +680,163 @@ fn append(a: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) void {
     buf.appendSlice(a, s) catch {};
 }
 
+// --- failure panel (#31) ---------------------------------------------------
+//
+// Every detected failure for the active trace, ranked critical -> warning ->
+// info (then by first event), in a fixed-height drawer beneath the timeline.
+// Selecting a failure expands its remediation steps (accordion, at most one
+// open) and jumps to its primary event so the failure and its evidence align.
+
+const failures_panel_height: f32 = 240;
+const max_failures_shown: usize = 50;
+
+fn failuresPanel(ui: *Ui, t: *const LoadedTrace) Node {
+    return ui.column(.{ .height = failures_panel_height }, .{
+        failuresHeader(ui, t),
+        ui.separator(.{}),
+        failuresBody(ui, t),
+    });
+}
+
+fn failuresHeader(ui: *Ui, t: *const LoadedTrace) Node {
+    return ui.row(.{ .padding = 8, .gap = 8, .cross = .center }, .{
+        ui.text(.{}, "Failures"),
+        ui.spacer(1),
+        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, failuresSummary(ui.arena, t.failures)),
+    });
+}
+
+fn failuresBody(ui: *Ui, t: *const LoadedTrace) Node {
+    if (t.detection_skipped)
+        return centeredNote(ui, "Failure detection was skipped for this large trace");
+    if (t.failures.len == 0)
+        return centeredNote(ui, "No failures detected");
+
+    const order = sortedFailureIndices(ui.arena, t.failures);
+    const shown = @min(order.len, max_failures_shown);
+    const extra: usize = if (order.len > shown) 1 else 0;
+    const rows = ui.arena.alloc(Node, shown + extra) catch {
+        ui.failed = true;
+        return centeredNote(ui, "");
+    };
+    for (0..shown) |k| rows[k] = failureRow(ui, t, order[k]);
+    if (extra == 1) {
+        const label = std.fmt.allocPrint(ui.arena, "... {d} more", .{order.len - shown}) catch "... more";
+        rows[shown] = moreRow(ui, label, 0);
+    }
+    return ui.scroll(.{ .grow = 1 }, .{
+        ui.column(.{ .gap = 4, .padding = 8 }, rows),
+    });
+}
+
+fn centeredNote(ui: *Ui, text: []const u8) Node {
+    return ui.column(.{ .grow = 1, .main = .center, .cross = .center, .padding = 16 }, .{
+        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, text),
+    });
+}
+
+fn failureRow(ui: *Ui, t: *const LoadedTrace, i: usize) Node {
+    const f = t.failures[i];
+    const expanded = (t.expanded_failure == i);
+    const header = ui.row(.{
+        .on_press = .{ .select_failure = i },
+        .selected = expanded,
+        .padding = 6,
+        .gap = 8,
+        .cross = .center,
+        .semantics = .{ .label = f.code.toWire() },
+    }, .{
+        severityDot(ui, f.severity),
+        ui.text(.{ .style_tokens = .{ .foreground = severityColor(f.severity) } }, f.code.toWire()),
+        ui.text(.{ .grow = 1 }, f.description),
+        disclosureGlyph(ui, true, expanded),
+    });
+    if (!expanded) return header;
+    return ui.column(.{ .gap = 4 }, .{
+        header,
+        failureDetail(ui, f),
+    });
+}
+
+fn failureDetail(ui: *Ui, f: types.Failure) Node {
+    var items: std.ArrayList(Node) = .empty;
+    items.append(ui.arena, detailRow(ui, "Affected", joinEventIds(ui.arena, f.event_ids))) catch {
+        ui.failed = true;
+    };
+    if (f.suggested_steps.len > 0) {
+        items.append(ui.arena, ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, "Suggested steps")) catch {};
+        for (f.suggested_steps) |step| {
+            items.append(ui.arena, stepRow(ui, step)) catch {};
+        }
+    }
+    return ui.column(.{ .gap = 4, .padding = 8 }, items.items);
+}
+
+fn stepRow(ui: *Ui, step: []const u8) Node {
+    return ui.row(.{ .gap = 6, .cross = .start }, .{
+        ui.text(.{ .width = 16, .style_tokens = .{ .foreground = .text_muted } }, "\u{00B7}"),
+        ui.text(.{ .grow = 1 }, step),
+    });
+}
+
+/// Affected event ids as a compact comma-joined list, capped so a many-event
+/// failure stays readable.
+fn joinEventIds(arena: std.mem.Allocator, ids: []const []const u8) []const u8 {
+    if (ids.len == 0) return "none";
+    const cap: usize = 6;
+    const shown = @min(ids.len, cap);
+    var buf: std.ArrayList(u8) = .empty;
+    for (ids[0..shown], 0..) |id, i| {
+        if (i > 0) buf.appendSlice(arena, ", ") catch {};
+        buf.appendSlice(arena, id) catch {};
+    }
+    if (ids.len > shown) {
+        buf.appendSlice(arena, std.fmt.allocPrint(arena, ", +{d} more", .{ids.len - shown}) catch "") catch {};
+    }
+    return buf.items;
+}
+
+/// Display order for the failure list: severity (critical -> warning -> info),
+/// then first affected event id. Returns indices into `failures`; the engine's
+/// slice is never mutated.
+fn sortedFailureIndices(arena: std.mem.Allocator, failures: []const types.Failure) []usize {
+    const idx = arena.alloc(usize, failures.len) catch return &.{};
+    for (idx, 0..) |*v, i| v.* = i;
+    std.mem.sort(usize, idx, failures, lessFailure);
+    return idx;
+}
+
+fn lessFailure(failures: []const types.Failure, a: usize, b: usize) bool {
+    const fa = failures[a];
+    const fb = failures[b];
+    const ra = severityRank(fa.severity);
+    const rb = severityRank(fb.severity);
+    if (ra != rb) return ra < rb;
+    const ea = if (fa.event_ids.len > 0) fa.event_ids[0] else "";
+    const eb = if (fb.event_ids.len > 0) fb.event_ids[0] else "";
+    return std.mem.order(u8, ea, eb) == .lt;
+}
+
+/// "N failures: C critical, W warning, I info" (nonzero severities only), or
+/// "no failures". Shared by the failure-panel header and the status bar.
+fn failuresSummary(arena: std.mem.Allocator, failures: []const types.Failure) []const u8 {
+    if (failures.len == 0) return "no failures";
+    var counts = [_]usize{ 0, 0, 0 }; // critical, warning, info
+    for (failures) |f| counts[severityRank(f.severity)] += 1;
+
+    var buf: std.ArrayList(u8) = .empty;
+    buf.appendSlice(arena, std.fmt.allocPrint(arena, "{d} failure{s}", .{ failures.len, if (failures.len == 1) "" else "s" }) catch "") catch {};
+    var first = true;
+    for ([_][]const u8{ "critical", "warning", "info" }, 0..) |word, rank| {
+        if (counts[rank] > 0) {
+            const sep = if (first) ": " else ", ";
+            buf.appendSlice(arena, std.fmt.allocPrint(arena, "{s}{d} {s}", .{ sep, counts[rank], word }) catch "") catch {};
+            first = false;
+        }
+    }
+    return buf.items;
+}
+
 // --- status bar ------------------------------------------------------------
 
 fn statusBar(ui: *Ui, model: *const Model) Node {
@@ -682,12 +844,64 @@ fn statusBar(ui: *Ui, model: *const Model) Node {
     const text = if (t.isError())
         std.fmt.allocPrint(ui.arena, "Failed to load {s}: {s}", .{ t.name, t.load_error orelse "unknown error" }) catch "load failed"
     else if (t.detection_skipped)
-        std.fmt.allocPrint(ui.arena, "{d} events \u{00B7} {d} sessions \u{00B7} detection skipped (large trace) \u{00B7} {d} warnings", .{
+        std.fmt.allocPrint(ui.arena, "{d} events \u{00B7} {d} sessions \u{00B7} detection skipped (large trace) \u{00B7} {d} parse warnings", .{
             t.eventCount(), t.sessionCount(), t.warningCount(),
         }) catch ""
     else
-        std.fmt.allocPrint(ui.arena, "{d} events \u{00B7} {d} sessions \u{00B7} {d} failures \u{00B7} {d} warnings", .{
-            t.eventCount(), t.sessionCount(), t.failureCount(), t.warningCount(),
+        std.fmt.allocPrint(ui.arena, "{d} events \u{00B7} {d} sessions \u{00B7} {s} \u{00B7} {d} parse warnings", .{
+            t.eventCount(), t.sessionCount(), failuresSummary(ui.arena, t.failures), t.warningCount(),
         }) catch "";
     return ui.statusBar(.{}, text);
+}
+
+// ---------------------------------------------------------------------------
+// Tests — pure view helpers (widget-level behavior is covered in tests.zig)
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+fn testFailure(code: types.FailureCode, severity: types.FailureSeverity, comptime first_event: []const u8) types.Failure {
+    return .{
+        .code = code,
+        .description = "test",
+        .severity = severity,
+        // `first_event` is comptime so `&.{first_event}` is a static array, not
+        // a dangling pointer into this frame.
+        .event_ids = &.{first_event},
+        .suggested_steps = &.{},
+    };
+}
+
+test "failures sort critical -> warning -> info, then by first event" {
+    const failures = [_]types.Failure{
+        testFailure(.slow_response, .warning, "evt-0005"),
+        testFailure(.connector_fault, .critical, "evt-0009"),
+        testFailure(.heartbeat_interval_violation, .info, "evt-0002"),
+        testFailure(.failed_authorization, .warning, "evt-0003"),
+        testFailure(.station_offline_during_session, .critical, "evt-0001"),
+    };
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+
+    const order = sortedFailureIndices(arena_state.allocator(), &failures);
+    // critical (evt-0001, evt-0009), then warning (evt-0003, evt-0005), then info.
+    try testing.expectEqualSlices(usize, &.{ 4, 1, 3, 0, 2 }, order);
+}
+
+test "failuresSummary breaks down nonzero severities" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    try testing.expectEqualStrings("no failures", failuresSummary(a, &.{}));
+
+    const failures = [_]types.Failure{
+        testFailure(.connector_fault, .critical, "evt-0001"),
+        testFailure(.slow_response, .warning, "evt-0002"),
+        testFailure(.failed_authorization, .warning, "evt-0003"),
+    };
+    try testing.expectEqualStrings("3 failures: 1 critical, 2 warning", failuresSummary(a, &failures));
+
+    const one = [_]types.Failure{testFailure(.heartbeat_interval_violation, .info, "evt-0001")};
+    try testing.expectEqualStrings("1 failure: 1 info", failuresSummary(a, &one));
 }
