@@ -8,8 +8,8 @@
 
 ## Active milestone
 
-**S1 — Engine core (0.1.0): complete.** Next up: **S2 — Detection + conformance**
-(see [ROADMAP.md](ROADMAP.md)).
+**S2 — Detection + conformance (0.1.0): in progress.** S1 — Engine core is
+complete (see [ROADMAP.md](ROADMAP.md)).
 
 ## What's done
 
@@ -55,13 +55,21 @@ tests green headlessly on macOS + Linux.
 
 ## What's in progress
 
-- Nothing in flight — S1 is closed; S2 is next.
+**S2 — Detection + conformance (0.1.0).** Building the 16-rule failure taxonomy
+in Zig, mirroring the toolkit's `detection.ts`:
+
+- **Failure model + foundational rules** (#19) — the `Failure` / `FailureCode`
+  (16-code taxonomy) / `FailureSeverity` model, the `detection.zig` orchestrator
+  with per-code severity + remediation metadata, and rules 1–3
+  (FAILED_AUTHORIZATION, CONNECTOR_FAULT, STATION_OFFLINE_DURING_SESSION).
+- Next: protocol & transaction rules (#20), timing & anomaly rules (#21), and the
+  conformance harness over the 15 shared scenarios (#22).
 
 ## What's next
 
-**S2 — Detection + conformance (0.1.0):** the full OCPP 1.6J failure taxonomy in
-Zig, plus the conformance harness that runs the shared scenario fixtures and
-checks Studio's detected failures against locked goldens.
+**S3 — Inspector UI (0.2.0):** the native inspector — open / drag-drop traces, a
+virtualized event timeline, the per-message inspector, the failure panel, and
+search / filter, handling traces far larger than a browser tab can hold.
 
 ## Known blockers / decisions pending
 
@@ -73,7 +81,7 @@ checks Studio's detected failures against locked goldens.
 | --- | --- |
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
-| `ocpp` (engine) | ✅ done for S1 |
+| `ocpp` (engine) | 🚧 detection in progress (S2) |
 | `ui` (native views) | ⬜ placeholder (S3) |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
