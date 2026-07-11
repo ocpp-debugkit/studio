@@ -248,10 +248,84 @@ fn payloadContainsText(value: std.json.Value, needle: []const u8, depth: usize) 
 /// `filtered` null = show all events (display index == event index); non-null =
 /// the filtered event indices, so only matching rows exist and hidden rows never
 /// become widgets (the window stays viewport-sized either way).
+// --- replay transport (#44): manual step / scrub over the (filtered) timeline ---
+//
+// A step control that walks the current selection through the visible events —
+// first / prev / next / last — reusing `select_event` with view-computed target
+// indices, so stepping and clicking share one selection model. The current event
+// is highlighted in the timeline exactly as a click would. Real wall-clock
+// auto-play needs a timer source the zero-config runner does not expose, so it is
+// deferred to the runner-eject bucket (#33).
+
+const TransportTargets = struct {
+    first: ?usize = null,
+    prev: ?usize = null,
+    next: ?usize = null,
+    last: ?usize = null,
+};
+
+/// Real event index for display position `d` under the (optional) filter.
+fn realIndexAt(filtered: ?[]const usize, d: usize) usize {
+    return if (filtered) |fi| fi[d] else d;
+}
+
+/// Display position of the current selection within the visible set, or null
+/// when nothing is selected or the selection is hidden by the active filter.
+fn transportPosition(t: *const LoadedTrace, filtered: ?[]const usize, count: usize) ?usize {
+    const sel = t.selected_event orelse return null;
+    if (filtered) |fi| {
+        for (fi, 0..) |real, d| if (real == sel) return d;
+        return null;
+    }
+    return if (sel < count) sel else null;
+}
+
+/// Target real-indices for the four step controls. All null when there are no
+/// visible events. Boundaries clamp (prev at the start / next at the end stay
+/// put); with no current position, prev → last and next → first.
+fn transportTargets(filtered: ?[]const usize, count: usize, cur: ?usize) TransportTargets {
+    if (count == 0) return .{};
+    const first = realIndexAt(filtered, 0);
+    const last = realIndexAt(filtered, count - 1);
+    const prev = if (cur) |c| realIndexAt(filtered, if (c > 0) c - 1 else 0) else last;
+    const next = if (cur) |c| realIndexAt(filtered, if (c + 1 < count) c + 1 else count - 1) else first;
+    return .{ .first = first, .prev = prev, .next = next, .last = last };
+}
+
+fn replayTransport(ui: *Ui, t: *const LoadedTrace, filtered: ?[]const usize) Node {
+    const count = if (filtered) |fi| fi.len else t.events.len;
+    const cur = transportPosition(t, filtered, count);
+    const targets = transportTargets(filtered, count, cur);
+    const muted = canvas.StyleTokenRefs{ .foreground = .text_muted };
+    const pos: []const u8 = if (cur) |c|
+        (std.fmt.allocPrint(ui.arena, "{d} / {d}", .{ c + 1, count }) catch "…")
+    else
+        (std.fmt.allocPrint(ui.arena, "- / {d}", .{count}) catch "…");
+    return ui.row(.{ .padding = 6, .gap = 4, .cross = .center }, .{
+        ui.text(.{ .style_tokens = muted }, "Replay"),
+        transportButton(ui, "First", targets.first),
+        transportButton(ui, "Prev", targets.prev),
+        transportButton(ui, "Next", targets.next),
+        transportButton(ui, "Last", targets.last),
+        ui.spacer(1),
+        ui.text(.{ .style_tokens = muted }, pos),
+    });
+}
+
+fn transportButton(ui: *Ui, label: []const u8, target: ?usize) Node {
+    return ui.button(.{
+        .on_press = if (target) |ti| Msg{ .select_event = ti } else null,
+        .variant = .ghost,
+        .size = .sm,
+    }, label);
+}
+
 fn timelinePane(ui: *Ui, t: *const LoadedTrace, filtered: ?[]const usize) Node {
     const count = if (filtered) |fi| fi.len else t.events.len;
     if (filtered != null and count == 0) {
         return ui.column(.{ .min_width = 360, .grow = 1 }, .{
+            replayTransport(ui, t, filtered),
+            ui.separator(.{}),
             timelineHeader(ui),
             ui.separator(.{}),
             centeredNote(ui, "No matching events"),
@@ -281,6 +355,8 @@ fn timelinePane(ui: *Ui, t: *const LoadedTrace, filtered: ?[]const usize) Node {
         row.* = node;
     }
     return ui.column(.{ .min_width = 360, .grow = 1 }, .{
+        replayTransport(ui, t, filtered),
+        ui.separator(.{}),
         timelineHeader(ui),
         ui.separator(.{}),
         ui.virtualList(opts, window, .{rows}),

@@ -8,6 +8,7 @@ const native_sdk = @import("native_sdk");
 const main = @import("main.zig");
 const workspace = @import("ui/workspace.zig");
 const inspector = @import("ui/inspector.zig");
+const types = @import("ocpp/ocpp.zig").types;
 
 const canvas = native_sdk.canvas;
 const testing = std.testing;
@@ -517,4 +518,61 @@ test "the inspector view lays out through the canvas engine" {
     var nodes: [256]canvas.WidgetLayoutNode = undefined;
     const layout = try canvas.layoutWidgetTree(tree.root, native_sdk.geometry.RectF.init(0, 0, 1200, 800), &nodes);
     try testing.expect(layout.nodes.len > 0);
+}
+
+test "the replay transport steps the selection through the timeline" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .open_sample); // 22 events, no filter
+
+    // Nothing selected yet → Next selects the first event.
+    var tree = try buildTree(arena, &model);
+    workspace.update(&model, tree.msgForPointer((try expectByText(tree.root, .button, "Next")).id, .up).?);
+    try testing.expectEqual(@as(?usize, 0), model.activeTrace().?.selected_event);
+
+    // Next advances; Prev retreats.
+    tree = try buildTree(arena, &model);
+    workspace.update(&model, tree.msgForPointer((try expectByText(tree.root, .button, "Next")).id, .up).?);
+    try testing.expectEqual(@as(?usize, 1), model.activeTrace().?.selected_event);
+
+    tree = try buildTree(arena, &model);
+    workspace.update(&model, tree.msgForPointer((try expectByText(tree.root, .button, "Prev")).id, .up).?);
+    try testing.expectEqual(@as(?usize, 0), model.activeTrace().?.selected_event);
+
+    // Last jumps to the final event; First returns to the top.
+    tree = try buildTree(arena, &model);
+    workspace.update(&model, tree.msgForPointer((try expectByText(tree.root, .button, "Last")).id, .up).?);
+    try testing.expectEqual(@as(?usize, 21), model.activeTrace().?.selected_event);
+
+    tree = try buildTree(arena, &model);
+    workspace.update(&model, tree.msgForPointer((try expectByText(tree.root, .button, "First")).id, .up).?);
+    try testing.expectEqual(@as(?usize, 0), model.activeTrace().?.selected_event);
+}
+
+test "the replay transport steps over the filtered set, skipping hidden events" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .open_sample);
+    workspace.update(&model, .{ .toggle_type_filter = .call_result }); // responses only
+
+    // Next lands on a CallResult — a hidden Call is never selected.
+    var tree = try buildTree(arena, &model);
+    workspace.update(&model, tree.msgForPointer((try expectByText(tree.root, .button, "Next")).id, .up).?);
+    const first_sel = model.activeTrace().?.selected_event.?;
+    try testing.expectEqual(types.MessageType.call_result, model.activeTrace().?.events[first_sel].message_type);
+
+    // Next again advances to a later CallResult.
+    tree = try buildTree(arena, &model);
+    workspace.update(&model, tree.msgForPointer((try expectByText(tree.root, .button, "Next")).id, .up).?);
+    const second_sel = model.activeTrace().?.selected_event.?;
+    try testing.expectEqual(types.MessageType.call_result, model.activeTrace().?.events[second_sel].message_type);
+    try testing.expect(second_sel > first_sel);
 }
