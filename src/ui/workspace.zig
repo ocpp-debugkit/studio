@@ -19,6 +19,20 @@ const types = ocpp.types;
 /// the tab strip and per-trace arenas bounded; opening past it is a no-op.
 pub const max_open_traces: usize = 8;
 
+/// Upper bound on payload-tree node identities the inspector tracks for the
+/// selected event. Node ids are pre-order ranks over the (depth/breadth-bounded)
+/// payload the view walks; capping the id space keeps collapse state a
+/// fixed-size bitset and stops a pathological payload from growing the tree past
+/// the view's widget-node budget. `inspector.zig` enforces the same bound when
+/// it walks the payload, so ids stay in [0, max_payload_tree_nodes).
+pub const max_payload_tree_nodes: usize = 100;
+
+/// Collapse state for the selected event's payload tree: bit `id` set = node
+/// `id` is collapsed. All-clear (the default) = every container expanded. A
+/// plain value type, so it copies with the trace during tab compaction and
+/// resets to empty when the trace is freed.
+pub const PayloadCollapse = std.StaticBitSet(max_payload_tree_nodes);
+
 /// One open trace and everything the engine derived from it. All borrowed slices
 /// (`name`, `parse`, `sessions`, `failures`) live in `arena`; freeing `arena`
 /// frees the whole trace. A failed load keeps its arena too (it holds `name` and
@@ -42,6 +56,10 @@ pub const LoadedTrace = struct {
     detection_skipped: bool = false,
     /// The timeline row the user selected, if any (wired in the timeline PR).
     selected_event: ?usize = null,
+    /// Collapse state for the selected event's payload tree (`PayloadCollapse`).
+    /// Reset whenever `selected_event` changes, so each event's tree opens
+    /// fully expanded.
+    payload_collapsed: PayloadCollapse = PayloadCollapse.initEmpty(),
 
     pub fn isError(self: *const LoadedTrace) bool {
         return self.load_error != null;
@@ -85,6 +103,12 @@ pub const Msg = union(enum) {
     close_trace: usize,
     /// Select event `payload` (a timeline row) in the active trace.
     select_event: usize,
+    /// Toggle collapse of payload-tree node `payload` for the active trace's
+    /// selected event.
+    toggle_payload_node: usize,
+    /// Jump to session `payload` in the active trace by selecting its first
+    /// event (drives the detail and session panels to that session).
+    select_session: usize,
     /// The timeline / detail splitter moved to fraction `payload`.
     timeline_resized: f32,
 };
@@ -143,11 +167,41 @@ pub const Model = struct {
     }
 
     /// Select a timeline row (event index) in the active trace. Out-of-range
-    /// indices are ignored.
+    /// indices are ignored. Changing the selection resets the payload-tree
+    /// collapse state, so the newly selected event opens fully expanded.
     pub fn selectEvent(self: *Model, index: usize) void {
         if (self.trace_count == 0) return;
         const t = &self.traces[self.active];
-        if (index < t.events.len) t.selected_event = index;
+        if (index >= t.events.len) return;
+        if (t.selected_event != index) t.payload_collapsed = PayloadCollapse.initEmpty();
+        t.selected_event = index;
+    }
+
+    /// Toggle the collapsed state of payload-tree node `id` for the active
+    /// trace's selected event. Ids at or past the tracked range are ignored.
+    pub fn togglePayloadNode(self: *Model, id: usize) void {
+        if (self.trace_count == 0) return;
+        if (id >= max_payload_tree_nodes) return;
+        self.traces[self.active].payload_collapsed.toggle(id);
+    }
+
+    /// Jump to session `index` in the active trace by selecting its first
+    /// event. Sessions hold id-bearing copies of their events (timeline.zig),
+    /// so the first event maps back to a timeline row by its stable event id.
+    /// Out-of-range indices and empty sessions are ignored.
+    pub fn selectSession(self: *Model, index: usize) void {
+        if (self.trace_count == 0) return;
+        const t = &self.traces[self.active];
+        if (index >= t.sessions.len) return;
+        const s = t.sessions[index];
+        if (s.events.len == 0) return;
+        const first_id = s.events[0].id;
+        for (t.events, 0..) |e, i| {
+            if (std.mem.eql(u8, e.id, first_id)) {
+                self.selectEvent(i);
+                return;
+            }
+        }
     }
 
     /// Close trace `index`, freeing its arena and compacting the tab list.
@@ -192,6 +246,8 @@ pub fn update(model: *Model, msg: Msg) void {
         .select_trace => |i| model.selectTrace(i),
         .close_trace => |i| model.closeTrace(i),
         .select_event => |i| model.selectEvent(i),
+        .toggle_payload_node => |id| model.togglePayloadNode(id),
+        .select_session => |i| model.selectSession(i),
         .timeline_resized => |f| model.timeline_split = f,
     }
 }
@@ -354,6 +410,59 @@ test "selecting an event records it on the active trace, bounds-checked" {
     // Out of range is ignored (the sample has 22 events).
     update(&model, .{ .select_event = 9999 });
     try testing.expectEqual(@as(?usize, 5), model.activeTrace().?.selected_event);
+}
+
+test "toggling payload nodes flips collapse bits, bounds-checked" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .open_sample);
+    update(&model, .{ .select_event = 0 });
+
+    try testing.expect(!model.activeTrace().?.payload_collapsed.isSet(3));
+    update(&model, .{ .toggle_payload_node = 3 });
+    try testing.expect(model.activeTrace().?.payload_collapsed.isSet(3));
+    update(&model, .{ .toggle_payload_node = 3 });
+    try testing.expect(!model.activeTrace().?.payload_collapsed.isSet(3));
+
+    // Ids at/past the tracked range are ignored (no panic, no effect).
+    update(&model, .{ .toggle_payload_node = max_payload_tree_nodes });
+    update(&model, .{ .toggle_payload_node = 999_999 });
+}
+
+test "reselecting a different event resets payload collapse state" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .open_sample);
+    update(&model, .{ .select_event = 0 });
+    update(&model, .{ .toggle_payload_node = 2 });
+    try testing.expect(model.activeTrace().?.payload_collapsed.isSet(2));
+
+    // A new selection opens fully expanded again.
+    update(&model, .{ .select_event = 6 });
+    try testing.expect(!model.activeTrace().?.payload_collapsed.isSet(2));
+
+    // Re-selecting the same event leaves collapse state intact.
+    update(&model, .{ .toggle_payload_node = 2 });
+    update(&model, .{ .select_event = 6 });
+    try testing.expect(model.activeTrace().?.payload_collapsed.isSet(2));
+}
+
+test "selecting a session jumps to its first event" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .open_sample);
+    const t = model.activeTrace().?;
+    try testing.expectEqual(@as(usize, 1), t.sessionCount());
+
+    update(&model, .{ .select_session = 0 });
+    // The sample's one session begins at the BootNotification (event 0).
+    const first = t.sessions[0].events[0];
+    const selected = model.activeTrace().?.selected_event.?;
+    try testing.expectEqualStrings(first.id, model.activeTrace().?.events[selected].id);
+
+    // Out-of-range session index is ignored.
+    update(&model, .{ .select_session = 42 });
+    try testing.expectEqual(@as(?usize, selected), model.activeTrace().?.selected_event);
 }
 
 test "the splitter fraction is model-owned and echoed by update" {
