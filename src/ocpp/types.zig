@@ -192,6 +192,27 @@ pub const Session = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Session summary (ADR-0003)
+// ---------------------------------------------------------------------------
+
+/// Overview statistics for a charging session, derived by summarizer.zig.
+/// Mirrors the toolkit's `SessionSummary` (`core/types.ts`) — a presentational
+/// projection of `Session` consumed by the reporter and the diff.
+pub const SessionSummary = struct {
+    session_id: []const u8,
+    station_id: []const u8,
+    connector_id: ?i64,
+    transaction_id: ?i64,
+    status: Status,
+    event_count: usize,
+    /// Session duration in milliseconds; null when start or end is unknown.
+    duration_ms: ?i64,
+    failure_count: usize,
+    /// Action names of the session's Call messages, in order.
+    action_sequence: []const []const u8,
+};
+
+// ---------------------------------------------------------------------------
 // Failure detection model
 // ---------------------------------------------------------------------------
 

@@ -8,10 +8,11 @@
 
 ## Active milestone
 
-**S3 — Inspector UI (0.2.0): complete.** The engine (S0–S2) and the native
-inspector (open, virtualized timeline, message inspector, session + failure
-panels, search & filter) are done. Next up is **S4 — Analysis parity+ (0.3.0)**
-(see [ROADMAP.md](ROADMAP.md)).
+**S4 — Analysis parity+ (0.3.0): in progress.** S0–S3 are complete (the engine
+and the native inspector). S4 reaches parity with the toolkit's analysis surface;
+the first slice — Markdown / HTML report generation (#41) — has landed.
+Anonymize (#42), diff (#43), wall-clock replay (#44), and the headless CLI (#45)
+remain (see [ROADMAP.md](ROADMAP.md)).
 
 ## What's done
 
@@ -116,10 +117,25 @@ Deferred out of S3: interactive open — native dialog + drag-drop (#33) — and
 timeline viewport scroll on jump (session/failure), both of which need an ejected
 runner (see ADR-0006). Tracked as follow-ups, not blockers.
 
+### S4 — Analysis parity+ (0.3.0) 🚧
+
+In progress. Landed so far:
+
+- **Report generation (#41)** — `src/ocpp/report.zig` renders a trace analysis as
+  Markdown and self-contained HTML, mirroring the toolkit's reporter (the same six
+  sections: header, session overview, timeline summary, failures, suggested next
+  steps, event appendix). All trace-derived text is escaped on both paths (HTML
+  entities; Markdown table/line-structural chars) — hardening the untrusted-input
+  path beyond the toolkit's HTML-only escaping — and every list section is bounded
+  so a dataset-scale trace can't produce an unbounded document. A small
+  `src/ocpp/summarizer.zig` (ADR-0003 parity) derives the per-session summaries
+  the report consumes.
+
 ## What's next
 
-**S4 — Analysis parity+ (0.3.0)** — reports (Markdown / HTML), anonymize, diff,
-wall-clock replay, and a headless CLI mode.
+Remaining **S4 — Analysis parity+ (0.3.0)** issues: anonymize-on-export (#42),
+semantic trace diff (#43), replay + wall-clock playback (#44), and the headless
+CLI subcommands (#45). Then **S5 — Live capture** (the flagship).
 
 ## Known blockers / decisions pending
 
@@ -131,7 +147,7 @@ wall-clock replay, and a headless CLI mode.
 | --- | --- |
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
-| `ocpp` (engine) | ✅ S2 + trusted ingestion (#29); O(n) detection pending (#36) |
+| `ocpp` (engine) | ✅ S2 + trusted ingestion (#29) + reports & summarizer (#41); O(n) detection pending (#36) |
 | `ui` (native views) | ✅ S3 inspector — timeline, message inspector, session + failure panels, search & filter (#27–#32) |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
