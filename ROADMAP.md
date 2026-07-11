@@ -14,7 +14,7 @@ the stable part.
 | **S3** | 0.2.0 | Inspector UI | ✅ Complete |
 | **S4** | 0.3.0 | Analysis parity+ | Next up |
 | **S5** | 0.4.0 | Live capture ⭐ | Planned |
-| **S6** | 1.0.0 | 1.0 polish | Planned |
+| **S6** | 1.0.0 | 1.0 polish & launch | Planned |
 
 ## S0 — Foundation (0.0.x) ✅
 
@@ -64,11 +64,23 @@ to the canonical trace format, and surfacing it all in a live timeline — with
 OS notifications on critical failures. This is the capability a browser tab
 cannot provide, and the reason Studio exists.
 
-## S6 — 1.0 polish (1.0.0)
+## S6 — 1.0 polish & launch (1.0.0)
 
 A signed macOS app and a Linux package, a menu-bar live monitor, a complete
 docs set, an automation-driven GUI test suite, and the frozen conformance
 contract. Public 1.0 release.
+
+Studio also joins the ecosystem's web presence: a **Studio section on
+[ocppdebugkit.com](https://ocppdebugkit.com)** — a `/studio` page (positioning,
+the "library vs. instrument" split with the toolkit, feature highlights,
+screenshots, download links) plus cross-links from the toolkit landing and
+inspector, with the conformance contract — two independent implementations, one
+trace format — as the trust hook. This is a **cross-repo deliverable**: the site
+lives in the toolkit monorepo (`apps/web`), so the page and its issues are filed
+there. It stays in the monorepo rather than a separate `website` repo because the
+site's live inspector already depends on the toolkit's workspace packages and
+Studio coverage is static content; revisit only if the site later needs an
+independent brand or deploy cadence.
 
 ## Beyond 1.0
 
