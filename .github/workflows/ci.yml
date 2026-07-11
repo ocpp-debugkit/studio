@@ -59,7 +59,7 @@ jobs:
         with:
           version: 0.16.0
       - name: Install GTK + Xvfb
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev xvfb
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev xvfb dbus
       - name: Install Native SDK CLI
         run: npm install -g @native-sdk/cli@0.4.1
       - name: Build headless app (automation enabled)
