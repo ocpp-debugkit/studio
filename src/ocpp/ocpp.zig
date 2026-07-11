@@ -9,6 +9,8 @@ pub const normalizer = @import("normalizer.zig");
 pub const parser = @import("parser.zig");
 pub const timeline = @import("timeline.zig");
 pub const detection = @import("detection.zig");
+pub const summarizer = @import("summarizer.zig");
+pub const report = @import("report.zig");
 
 test {
     _ = types;
@@ -16,5 +18,7 @@ test {
     _ = parser;
     _ = timeline;
     _ = detection;
+    _ = summarizer;
+    _ = report;
     _ = @import("conformance/harness.zig");
 }
