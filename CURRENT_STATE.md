@@ -10,9 +10,9 @@
 
 **S4 — Analysis parity+ (0.3.0): in progress.** S0–S3 are complete (the engine
 and the native inspector). S4 reaches parity with the toolkit's analysis surface;
-the first slice — Markdown / HTML report generation (#41) — has landed.
-Anonymize (#42), diff (#43), wall-clock replay (#44), and the headless CLI (#45)
-remain (see [ROADMAP.md](ROADMAP.md)).
+the first slices — Markdown / HTML report generation (#41) and anonymize-on-export
+(#42) — have landed. Diff (#43), wall-clock replay (#44), and the headless CLI
+(#45) remain (see [ROADMAP.md](ROADMAP.md)).
 
 ## What's done
 
@@ -130,12 +130,19 @@ In progress. Landed so far:
   so a dataset-scale trace can't produce an unbounded document. A small
   `src/ocpp/summarizer.zig` (ADR-0003 parity) derives the per-session summaries
   the report consumes.
+- **Anonymize-on-export (#42)** — `src/ocpp/anonymize.zig` rewrites a parsed trace
+  to shareable JSON: known sensitive keys (idTag / serials / stationId /
+  identifier) are replaced, `transactionId`s resequenced, and email / phone / IPv4
+  patterns redacted in string values (hand-rolled matchers, since Zig std has no
+  regex), emitting pretty JSON. It mirrors the toolkit's code — including its two
+  documented quirks (meter values are not transformed; `transactionId` resequences
+  per occurrence) — flagged in-code rather than silently diverging.
 
 ## What's next
 
-Remaining **S4 — Analysis parity+ (0.3.0)** issues: anonymize-on-export (#42),
-semantic trace diff (#43), replay + wall-clock playback (#44), and the headless
-CLI subcommands (#45). Then **S5 — Live capture** (the flagship).
+Remaining **S4 — Analysis parity+ (0.3.0)** issues: semantic trace diff (#43),
+replay + wall-clock playback (#44), and the headless CLI subcommands (#45). Then
+**S5 — Live capture** (the flagship).
 
 ## Known blockers / decisions pending
 
@@ -147,7 +154,7 @@ CLI subcommands (#45). Then **S5 — Live capture** (the flagship).
 | --- | --- |
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
-| `ocpp` (engine) | ✅ S2 + trusted ingestion (#29) + reports & summarizer (#41); O(n) detection pending (#36) |
+| `ocpp` (engine) | ✅ S2 + trusted ingestion (#29) + reports/summarizer (#41) + anonymize (#42); O(n) detection pending (#36) |
 | `ui` (native views) | ✅ S3 inspector — timeline, message inspector, session + failure panels, search & filter (#27–#32) |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
