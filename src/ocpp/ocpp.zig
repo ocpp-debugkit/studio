@@ -16,4 +16,5 @@ test {
     _ = parser;
     _ = timeline;
     _ = detection;
+    _ = @import("conformance/harness.zig");
 }

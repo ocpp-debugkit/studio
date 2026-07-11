@@ -8,8 +8,8 @@
 
 ## Active milestone
 
-**S2 — Detection + conformance (0.1.0): in progress.** S1 — Engine core is
-complete (see [ROADMAP.md](ROADMAP.md)).
+**S2 — Detection + conformance (0.1.0): complete.** Next up: **S3 — Inspector UI**
+(see [ROADMAP.md](ROADMAP.md)).
 
 ## What's done
 
@@ -53,22 +53,26 @@ conformance contract (behavior, not source) and tested via
 correlates end to end (one completed session, transactionId 100001); engine
 tests green headlessly on macOS + Linux.
 
+### S2 — Detection + conformance ✅
+
+The full 16-rule OCPP 1.6J failure taxonomy in `src/ocpp/detection.zig`, mirroring
+the toolkit's `detection.ts`, plus a harness that locks Studio's output to the
+toolkit's:
+
+- **Failure model + foundational rules** (#19) — the `Failure` / `FailureCode` /
+  `FailureSeverity` model and rules 1–3.
+- **Protocol & transaction rules** (#20) — rules 4–10.
+- **Timing & anomaly rules** (#21) — rules 11–16.
+- **Conformance harness** (#22) — 15 vendored scenario traces + goldens
+  (`src/ocpp/conformance/`, `contract-v1`, generated from the toolkit) and a
+  `native test` gate asserting Studio's de-duplicated, sorted `FailureCode` set
+  matches each golden.
+
+**Exit criteria met:** 15/15 scenarios match the locked goldens.
+
 ## What's in progress
 
-**S2 — Detection + conformance (0.1.0).** Building the 16-rule failure taxonomy
-in Zig, mirroring the toolkit's `detection.ts`:
-
-- **Failure model + foundational rules** (#19) — the `Failure` / `FailureCode`
-  (16-code taxonomy) / `FailureSeverity` model, the `detection.zig` orchestrator
-  with per-code severity + remediation metadata, and rules 1–3
-  (FAILED_AUTHORIZATION, CONNECTOR_FAULT, STATION_OFFLINE_DURING_SESSION).
-- **Protocol & transaction rules** (#20) — rules 4–10: TIMEOUT_NO_HEARTBEAT,
-  METER_VALUE_GAP, INVALID_STOP_REASON, UNEXPECTED_START,
-  STATUS_TRANSITION_VIOLATION, DIAGNOSTICS_FAILURE, FIRMWARE_UPDATE_FAILURE.
-- **Timing & anomaly rules** (#21) — rules 11–16: SUSPICIOUS_SESSION_DURATION,
-  SLOW_RESPONSE, HEARTBEAT_INTERVAL_VIOLATION, METER_VALUE_ANOMALY,
-  UNRESPONSIVE_CSMS, REPEATED_BOOT_NOTIFICATION. All 16 rules now run.
-- Next: the conformance harness over the 15 shared scenarios (#22).
+- Nothing in flight — S2 is closed; S3 is next.
 
 ## What's next
 
@@ -86,8 +90,8 @@ search / filter, handling traces far larger than a browser tab can hold.
 | --- | --- |
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
-| `ocpp` (engine) | 🚧 detection in progress (S2) |
+| `ocpp` (engine) | ✅ done for S2 |
 | `ui` (native views) | ⬜ placeholder (S3) |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
-| `conformance` | ⬜ not started (S2) |
+| `conformance` | ✅ done for S2 (15/15, `contract-v1`) |
