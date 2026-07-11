@@ -7,9 +7,11 @@
 pub const types = @import("types.zig");
 pub const normalizer = @import("normalizer.zig");
 pub const parser = @import("parser.zig");
+pub const timeline = @import("timeline.zig");
 
 test {
     _ = types;
     _ = normalizer;
     _ = parser;
+    _ = timeline;
 }
