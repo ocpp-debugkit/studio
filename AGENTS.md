@@ -20,6 +20,7 @@ studio/
 ├── src/
 │   ├── main.zig             # Model, Msg, update, app wiring
 │   ├── app.native           # the view (declarative markup)
+│   ├── ocpp/                # pure, headless OCPP engine (types, parser, …)
 │   └── tests.zig            # headless view/model tests
 ├── scripts/smoke.sh         # portable automation smoke test (Xvfb in CI)
 ├── docs/adr/                # architecture decision records
