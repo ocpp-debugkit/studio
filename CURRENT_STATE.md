@@ -82,11 +82,17 @@ toolkit's:
   (`ui.virtualList`) in a model-owned `split`: one row per event (severity dot,
   time, direction, message, type), row selection, and a first-cut detail pane.
   The window stays viewport-sized in widget nodes no matter the trace length.
+- **Trusted ingestion + capacity (#29)** — trace files the user opens now parse
+  under raised `trusted_limits` (256 MB / 2M events) vs. the browser-scale
+  `untrusted_limits` kept for live/pasted data (ADR-0007). A 500k-event trace
+  parses, correlates, and stays viewport-bounded in the timeline. Failure
+  detection is capped at 50k events (several rules are O(n²)); past it the trace
+  is fully inspectable but detection is skipped and the UI says so — the O(n)
+  detection rewrite is tracked in #36.
 
-Still ahead in S3: the trusted-ingestion capacity path for 500k-event / 100 MB
-traces (#29), the full message inspector + session panel (#30), the failure panel
-(#31), and search / filter (#32). Interactive open (native dialog + drag-drop) is
-deferred to #33 — it needs an ejected runner (see ADR-0006).
+Still ahead in S3: the full message inspector + session panel (#30), the failure
+panel (#31), and search / filter (#32). Interactive open (native dialog +
+drag-drop) is deferred to #33 — it needs an ejected runner (see ADR-0006).
 
 ## What's next
 
@@ -103,7 +109,7 @@ wall-clock replay, and a headless CLI mode.
 | --- | --- |
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
-| `ocpp` (engine) | ✅ done for S2 |
+| `ocpp` (engine) | ✅ S2 + trusted ingestion (#29); O(n) detection pending (#36) |
 | `ui` (native views) | 🚧 shell + timeline (S3, #27–#28); panes + search next |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |

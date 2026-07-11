@@ -295,6 +295,10 @@ fn statusBar(ui: *Ui, model: *const Model) Node {
     const t = model.activeTrace().?;
     const text = if (t.isError())
         std.fmt.allocPrint(ui.arena, "Failed to load {s}: {s}", .{ t.name, t.load_error orelse "unknown error" }) catch "load failed"
+    else if (t.detection_skipped)
+        std.fmt.allocPrint(ui.arena, "{d} events \u{00B7} {d} sessions \u{00B7} detection skipped (large trace) \u{00B7} {d} warnings", .{
+            t.eventCount(), t.sessionCount(), t.warningCount(),
+        }) catch ""
     else
         std.fmt.allocPrint(ui.arena, "{d} events \u{00B7} {d} sessions \u{00B7} {d} failures \u{00B7} {d} warnings", .{
             t.eventCount(), t.sessionCount(), t.failureCount(), t.warningCount(),
