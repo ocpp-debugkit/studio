@@ -10,9 +10,9 @@
 
 **S4 — Analysis parity+ (0.3.0): in progress.** S0–S3 are complete (the engine
 and the native inspector). S4 reaches parity with the toolkit's analysis surface;
-report generation (#41), anonymize-on-export (#42), and semantic trace diff (#43)
-have landed. Wall-clock replay (#44) and the headless CLI (#45) remain (see
-[ROADMAP.md](ROADMAP.md)).
+report generation (#41), anonymize-on-export (#42), semantic trace diff (#43), and
+the replay engine core (#44) have landed. The manual-scrub replay transport (#44)
+and the headless CLI (#45) remain (see [ROADMAP.md](ROADMAP.md)).
 
 ## What's done
 
@@ -143,12 +143,18 @@ In progress. Landed so far:
   errorCode), added/removed events, a failure-set delta by code, and a
   first-session summary comparison. Includes a recursive JSON deep-equality check
   and a compact-JSON renderer for the changed values.
+- **Replay engine core (#44)** — `src/ocpp/replay.zig`, a deterministic,
+  timer-free `ReplayEngine` (step / stepBack / jumpTo / getState / reset) at
+  parity with the toolkit, exposing the failures detected at each position. The
+  manual-scrub UI transport is the remaining part of #44; real wall-clock
+  auto-play is deferred to the runner-eject bucket (#33), since the zero-config
+  runner exposes no timer effect (spiked).
 
 ## What's next
 
-Remaining **S4 — Analysis parity+ (0.3.0)** issues: replay + wall-clock playback
-(#44) and the headless CLI subcommands (#45). Then **S5 — Live capture** (the
-flagship).
+Remaining **S4 — Analysis parity+ (0.3.0)** work: the manual-scrub replay
+transport (#44 — wall-clock auto-play deferred to #33) and the headless CLI
+subcommands (#45). Then **S5 — Live capture** (the flagship).
 
 ## Known blockers / decisions pending
 
@@ -160,7 +166,7 @@ flagship).
 | --- | --- |
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
-| `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports/summarizer (#41) + anonymize (#42) + diff (#43); O(n) detection pending (#36) |
+| `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports (#41) + anonymize (#42) + diff (#43) + replay core (#44); O(n) detection pending (#36) |
 | `ui` (native views) | ✅ S3 inspector — timeline, message inspector, session + failure panels, search & filter (#27–#32) |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
