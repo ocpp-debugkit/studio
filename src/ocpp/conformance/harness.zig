@@ -9,6 +9,9 @@
 //! toolkit (the source of truth), tagged `contract-v1`; they are not authored by
 //! hand. See `README.md` in this directory. This layout lives under `src/` so the
 //! zero-config build can `@embedFile` it (ADR-0004).
+//!
+//! The scenario runner is exposed (`runAll` / `runNamed` / `scenarioNames`) so
+//! the headless CLI's `ci` and `scenario` subcommands share this exact logic.
 
 const std = @import("std");
 const parser = @import("../parser.zig");
@@ -34,22 +37,55 @@ const scenario_names = [_][]const u8{
     "unresponsive-csms",
 };
 
-test "conformance: detected failure codes match the locked goldens" {
-    var any_failed = false;
+/// The shared scenario names, in contract order.
+pub fn scenarioNames() []const []const u8 {
+    return &scenario_names;
+}
+
+/// Run every scenario, writing a `PASS <name>` / `FAIL <name>` line per scenario
+/// to `writer`. Returns true iff every detected-failure set matched its golden.
+pub fn runAll(gpa: std.mem.Allocator, writer: *std.Io.Writer) !bool {
+    var all_ok = true;
     inline for (scenario_names) |name| {
-        runScenario(
+        const ok = scenarioMatches(
+            gpa,
             name,
             @embedFile("fixtures/" ++ name ++ ".json"),
             @embedFile("goldens/" ++ name ++ ".json"),
-        ) catch {
-            any_failed = true;
-        };
+        );
+        try writer.print("{s} {s}\n", .{ if (ok) "PASS" else "FAIL", name });
+        if (!ok) all_ok = false;
     }
-    try std.testing.expect(!any_failed);
+    return all_ok;
 }
 
-fn runScenario(name: []const u8, trace_json: []const u8, golden_json: []const u8) !void {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+/// Run the single scenario named `name`. Returns null if no scenario has that
+/// name; otherwise whether it matched its golden (writing a PASS/FAIL line).
+pub fn runNamed(gpa: std.mem.Allocator, writer: *std.Io.Writer, name: []const u8) !?bool {
+    inline for (scenario_names) |sname| {
+        if (std.mem.eql(u8, name, sname)) {
+            const ok = scenarioMatches(
+                gpa,
+                sname,
+                @embedFile("fixtures/" ++ sname ++ ".json"),
+                @embedFile("goldens/" ++ sname ++ ".json"),
+            );
+            try writer.print("{s} {s}\n", .{ if (ok) "PASS" else "FAIL", sname });
+            return ok;
+        }
+    }
+    return null;
+}
+
+/// True iff the trace's de-duplicated, sorted detected `FailureCode` set equals
+/// the golden. Self-contained (owns an arena from `gpa`); prints a diagnostic to
+/// stderr on mismatch. Any engine error counts as a non-match.
+fn scenarioMatches(gpa: std.mem.Allocator, name: []const u8, trace_json: []const u8, golden_json: []const u8) bool {
+    return scenarioMatchesErr(gpa, name, trace_json, golden_json) catch false;
+}
+
+fn scenarioMatchesErr(gpa: std.mem.Allocator, name: []const u8, trace_json: []const u8, golden_json: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
 
@@ -78,8 +114,9 @@ fn runScenario(name: []const u8, trace_json: []const u8, golden_json: []const u8
         std.debug.print("\n  detected: ", .{});
         printCodes(detected.items);
         std.debug.print("\n", .{});
-        return error.ConformanceMismatch;
+        return false;
     }
+    return true;
 }
 
 fn equalCodes(a: []const []const u8, b: []const []const u8) bool {
@@ -101,4 +138,16 @@ fn printCodes(codes: []const []const u8) void {
         std.debug.print("{s}", .{c});
     }
     std.debug.print("]", .{});
+}
+
+test "conformance: detected failure codes match the locked goldens" {
+    inline for (scenario_names) |name| {
+        const ok = scenarioMatches(
+            std.testing.allocator,
+            name,
+            @embedFile("fixtures/" ++ name ++ ".json"),
+            @embedFile("goldens/" ++ name ++ ".json"),
+        );
+        try std.testing.expect(ok);
+    }
 }

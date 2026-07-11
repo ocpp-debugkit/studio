@@ -12,7 +12,7 @@ the stable part.
 | **S1** | 0.1.0 | Engine core | ✅ Complete |
 | **S2** | 0.1.0 | Detection + conformance | ✅ Complete |
 | **S3** | 0.2.0 | Inspector UI | ✅ Complete |
-| **S4** | 0.3.0 | Analysis parity+ | Next up |
+| **S4** | 0.3.0 | Analysis parity+ | ✅ Complete |
 | **S5** | 0.4.0 | Live capture ⭐ | Planned |
 | **S6** | 1.0.0 | 1.0 polish & launch | Planned |
 
@@ -49,12 +49,16 @@ tab can hold. Traces open from command-line paths and a built-in sample;
 interactive open (native dialog + drag-drop) is deferred to #33 (needs an
 ejected runner, ADR-0006).
 
-## S4 — Analysis parity+ (0.3.0)
+## S4 — Analysis parity+ (0.3.0) ✅
 
-Reach parity with the toolkit's analysis surface: Markdown / HTML reports,
-anonymize-on-export, trace diffing, and replay — with real wall-clock playback
-that the offline library cannot offer. A headless CLI mode ships in the same
-binary.
+Parity with the toolkit's analysis surface: Markdown / HTML reports,
+anonymize-on-export, trace diffing, and a deterministic replay engine with a
+manual-scrub transport. A headless CLI ships in the **same binary** (`inspect` /
+`report` / `diff` / `anonymize` / `ci` / `scenario`) — see
+[docs/cli-parity.md](docs/cli-parity.md). **Exit criteria met:** all six issues
+(#41–#45) merged; `native test` green (123 tests) and the app builds and runs the
+CLI. Real wall-clock replay playback is deferred to #33 (the zero-config runner
+exposes no timer effect), tracked as a follow-up.
 
 ## S5 — Live capture ⭐ (0.4.0)
 

@@ -14,6 +14,7 @@ pub const report = @import("report.zig");
 pub const anonymize = @import("anonymize.zig");
 pub const diff = @import("diff.zig");
 pub const replay = @import("replay.zig");
+pub const conformance = @import("conformance/harness.zig");
 
 test {
     _ = types;
@@ -26,5 +27,5 @@ test {
     _ = anonymize;
     _ = diff;
     _ = replay;
-    _ = @import("conformance/harness.zig");
+    _ = conformance;
 }
