@@ -60,6 +60,9 @@ pub const LoadedTrace = struct {
     /// Reset whenever `selected_event` changes, so each event's tree opens
     /// fully expanded.
     payload_collapsed: PayloadCollapse = PayloadCollapse.initEmpty(),
+    /// The failure whose remediation steps are expanded in the failure panel
+    /// (an accordion — at most one open), as an index into `failures`.
+    expanded_failure: ?usize = null,
 
     pub fn isError(self: *const LoadedTrace) bool {
         return self.load_error != null;
@@ -109,6 +112,9 @@ pub const Msg = union(enum) {
     /// Jump to session `payload` in the active trace by selecting its first
     /// event (drives the detail and session panels to that session).
     select_session: usize,
+    /// Toggle failure `payload`'s remediation steps in the failure panel and
+    /// jump to its primary event.
+    select_failure: usize,
     /// The timeline / detail splitter moved to fraction `payload`.
     timeline_resized: f32,
 };
@@ -195,9 +201,31 @@ pub const Model = struct {
         if (index >= t.sessions.len) return;
         const s = t.sessions[index];
         if (s.events.len == 0) return;
-        const first_id = s.events[0].id;
+        self.selectEventById(s.events[0].id);
+    }
+
+    /// Toggle failure `index`'s expansion in the failure panel (accordion: at
+    /// most one open) and jump to its primary event. A second activation of the
+    /// open failure just collapses it, leaving the selection put. Out-of-range
+    /// indices are ignored.
+    pub fn selectFailure(self: *Model, index: usize) void {
+        if (self.trace_count == 0) return;
+        const t = &self.traces[self.active];
+        if (index >= t.failures.len) return;
+        if (t.expanded_failure == index) {
+            t.expanded_failure = null;
+            return;
+        }
+        t.expanded_failure = index;
+        const f = t.failures[index];
+        if (f.event_ids.len > 0) self.selectEventById(f.event_ids[0]);
+    }
+
+    /// Select the timeline row whose event id equals `id`, if present.
+    fn selectEventById(self: *Model, id: []const u8) void {
+        const t = &self.traces[self.active];
         for (t.events, 0..) |e, i| {
-            if (std.mem.eql(u8, e.id, first_id)) {
+            if (std.mem.eql(u8, e.id, id)) {
                 self.selectEvent(i);
                 return;
             }
@@ -248,6 +276,7 @@ pub fn update(model: *Model, msg: Msg) void {
         .select_event => |i| model.selectEvent(i),
         .toggle_payload_node => |id| model.togglePayloadNode(id),
         .select_session => |i| model.selectSession(i),
+        .select_failure => |i| model.selectFailure(i),
         .timeline_resized => |f| model.timeline_split = f,
     }
 }
@@ -463,6 +492,35 @@ test "selecting a session jumps to its first event" {
     // Out-of-range session index is ignored.
     update(&model, .{ .select_session = 42 });
     try testing.expectEqual(@as(?usize, selected), model.activeTrace().?.selected_event);
+}
+
+test "selecting a failure expands it and jumps to its primary event" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    // The failed-auth conformance fixture detects one FAILED_AUTHORIZATION.
+    model.openBytes("failed-auth.json", @embedFile("../ocpp/conformance/fixtures/failed-auth.json"));
+    const t = model.activeTrace().?;
+    try testing.expect(t.failureCount() > 0);
+    try testing.expect(t.failures[0].event_ids.len > 0);
+    try testing.expectEqual(@as(?usize, null), t.expanded_failure);
+
+    update(&model, .{ .select_failure = 0 });
+    const at = model.activeTrace().?;
+    try testing.expectEqual(@as(?usize, 0), at.expanded_failure);
+    // Jumped to (selected) the failure's primary event.
+    const primary_id = at.failures[0].event_ids[0];
+    const sel = at.selected_event.?;
+    try testing.expectEqualStrings(primary_id, at.events[sel].id);
+
+    // A second activation collapses the accordion; the selection stays put.
+    update(&model, .{ .select_failure = 0 });
+    try testing.expectEqual(@as(?usize, null), model.activeTrace().?.expanded_failure);
+    try testing.expectEqual(@as(?usize, sel), model.activeTrace().?.selected_event);
+
+    // Out-of-range failure index is ignored.
+    update(&model, .{ .select_failure = 999 });
+    try testing.expectEqual(@as(?usize, sel), model.activeTrace().?.selected_event);
 }
 
 test "the splitter fraction is model-owned and echoed by update" {

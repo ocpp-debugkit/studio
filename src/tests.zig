@@ -269,6 +269,45 @@ test "toggling a payload container collapses its children" {
     try testing.expect(findByText(tree.root, .text, "timestamp") == null);
 }
 
+test "the failure panel shows the clean-trace positive state" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .open_sample); // the sample is a clean session
+
+    const tree = try buildTree(arena_state.allocator(), &model);
+    _ = try expectByText(tree.root, .text, "Failures"); // the drawer header
+    _ = try expectByText(tree.root, .text, "No failures detected");
+}
+
+test "the failure panel lists failures, expands steps, and jumps to the event" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    // The failed-auth conformance fixture detects one FAILED_AUTHORIZATION.
+    model.openBytes("failed-auth.json", @embedFile("ocpp/conformance/fixtures/failed-auth.json"));
+
+    var tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "FAILED_AUTHORIZATION");
+    // Collapsed: remediation is hidden until the row is opened.
+    try testing.expect(findByText(tree.root, .text, "Suggested steps") == null);
+
+    // Clicking the failure row expands it and jumps to its primary event.
+    const row = findRowWithText(tree.root, "FAILED_AUTHORIZATION") orelse return error.WidgetNotFound;
+    main.update(&model, tree.msgForPointer(row.id, .up).?);
+    try testing.expectEqual(@as(?usize, 0), model.activeTrace().?.expanded_failure);
+    try testing.expect(model.activeTrace().?.selected_event != null);
+
+    tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "Suggested steps");
+    _ = try expectByText(tree.root, .text, "Affected");
+}
+
 test "the virtual window stays viewport-sized at dataset scale" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -343,6 +382,14 @@ test "the inspector view passes the accessibility sweep (empty and loaded)" {
 
     workspace.update(&model, .{ .select_event = 5 }); // detail pane: tree, session, raw
     tree = try buildTree(arena, &model);
+    try canvas.expectA11yAuditSweepClean(testing.allocator, tree.root, sweep);
+
+    // A trace with an expanded failure exercises the failure drawer too.
+    var failing = Model{ .backing = testing.allocator };
+    defer failing.deinitAll();
+    failing.openBytes("failed-auth.json", @embedFile("ocpp/conformance/fixtures/failed-auth.json"));
+    workspace.update(&failing, .{ .select_failure = 0 });
+    tree = try buildTree(arena, &failing);
     try canvas.expectA11yAuditSweepClean(testing.allocator, tree.root, sweep);
 }
 
