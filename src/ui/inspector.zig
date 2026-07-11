@@ -28,11 +28,27 @@ const row_extent: f32 = 44;
 
 pub fn view(ui: *Ui, model: *const Model) Node {
     if (!model.hasTraces()) return emptyState(ui);
+    const t = model.activeTrace().?;
+    if (t.isError()) {
+        return ui.column(.{ .grow = 1 }, .{
+            topBar(ui, model),
+            ui.separator(.{}),
+            errorPanel(ui, t),
+            statusBar(ui, model, null),
+        });
+    }
+    // Derive the filtered index set ONCE (in the build arena) and thread it to
+    // the timeline and the status bar. Null = no active filter: the timeline
+    // indexes `t.events` directly, so an unfiltered huge trace allocates nothing.
+    const filtered: ?[]const usize =
+        if (model.filter.isActive()) filteredIndices(ui, t, &model.filter) else null;
     return ui.column(.{ .grow = 1 }, .{
         topBar(ui, model),
         ui.separator(.{}),
-        activeBody(ui, model),
-        statusBar(ui, model),
+        filterBar(ui, model),
+        ui.separator(.{}),
+        activeBody(ui, model, filtered),
+        statusBar(ui, model, filtered),
     });
 }
 
@@ -78,9 +94,8 @@ fn tabStrip(ui: *Ui, model: *const Model) Node {
 
 // --- active trace body: overview or error ----------------------------------
 
-fn activeBody(ui: *Ui, model: *const Model) Node {
+fn activeBody(ui: *Ui, model: *const Model, filtered: ?[]const usize) Node {
     const t = model.activeTrace().?;
-    if (t.isError()) return errorPanel(ui, t);
     // Timeline (left) / detail (right) fill the space above a fixed-height
     // failure drawer. `split` is horizontal-only, so the vertical stack is a
     // column: the split grows, the drawer keeps its height.
@@ -90,7 +105,7 @@ fn activeBody(ui: *Ui, model: *const Model) Node {
             .value = model.timeline_split,
             .on_resize = Ui.valueMsg(.timeline_resized),
         }, .{
-            timelinePane(ui, t),
+            timelinePane(ui, t, filtered),
             detailPane(ui, t),
         }),
         ui.separator(.{}),
@@ -105,12 +120,146 @@ fn errorPanel(ui: *Ui, t: *const LoadedTrace) Node {
     });
 }
 
+// --- filter bar (#32) ------------------------------------------------------
+//
+// A full-width toolbar over the timeline: a free-text search field plus toggle
+// facets (message type, direction, severity) that AND-compose. The derived
+// filtered index set (below) drives the virtual list, so hidden rows are never
+// materialized.
+
+fn filterBar(ui: *Ui, model: *const Model) Node {
+    const f = &model.filter;
+    return ui.row(.{ .padding = 8, .gap = 6, .cross = .center }, .{
+        ui.el(.search_field, .{
+            .grow = 1,
+            .min_width = 160,
+            .text = f.searchText(),
+            .placeholder = "Search action, id, or payload",
+            .on_input = Ui.inputMsg(.search_input),
+            .semantics = .{ .label = "search events" },
+        }, .{}),
+        facetButton(ui, "Call", .{ .toggle_type_filter = .call }, f.message_type == .call),
+        facetButton(ui, "Result", .{ .toggle_type_filter = .call_result }, f.message_type == .call_result),
+        facetButton(ui, "Error", .{ .toggle_type_filter = .call_error }, f.message_type == .call_error),
+        ui.separator(.{}),
+        facetButton(ui, "From CP", .{ .toggle_direction_filter = .cs_to_csms }, f.direction == .cs_to_csms),
+        facetButton(ui, "From CSMS", .{ .toggle_direction_filter = .csms_to_cs }, f.direction == .csms_to_cs),
+        ui.separator(.{}),
+        facetButton(ui, "Crit", .{ .toggle_severity_filter = .critical }, f.severity == .critical),
+        facetButton(ui, "Warn", .{ .toggle_severity_filter = .warning }, f.severity == .warning),
+        facetButton(ui, "Info", .{ .toggle_severity_filter = .info }, f.severity == .info),
+        clearFilterButton(ui, f),
+    });
+}
+
+fn facetButton(ui: *Ui, label: []const u8, msg: Msg, active: bool) Node {
+    return ui.button(.{
+        .on_press = msg,
+        .selected = active,
+        .variant = if (active) .secondary else .ghost,
+        .size = .sm,
+    }, label);
+}
+
+fn clearFilterButton(ui: *Ui, f: *const workspace.Filter) Node {
+    if (!f.isActive()) return ui.spacer(0);
+    return ui.button(.{ .on_press = .clear_filters, .variant = .ghost, .size = .sm }, "Clear");
+}
+
+// --- filter predicate + filtered index derive ------------------------------
+
+/// The matching event indices, in timeline order, allocated in the build arena.
+/// Called only when the filter is active (see `view`).
+fn filteredIndices(ui: *Ui, t: *const LoadedTrace, f: *const workspace.Filter) []const usize {
+    var list: std.ArrayList(usize) = .empty;
+    const needle = f.searchText();
+    for (t.events, 0..) |e, i| {
+        if (matchesFilter(t, e, f, needle)) {
+            list.append(ui.arena, i) catch {
+                ui.failed = true;
+                break;
+            };
+        }
+    }
+    return list.items;
+}
+
+fn matchesFilter(t: *const LoadedTrace, e: types.Event, f: *const workspace.Filter, needle: []const u8) bool {
+    if (f.direction) |d| if (e.direction != d) return false;
+    if (f.message_type) |mt| if (e.message_type != mt) return false;
+    if (f.severity) |sev| if (!participatesInSeverity(t, e.id, sev)) return false;
+    if (needle.len > 0) if (!matchesText(e, needle)) return false;
+    return true;
+}
+
+/// True when `event_id` participates in any detected failure of severity `sev`.
+fn participatesInSeverity(t: *const LoadedTrace, event_id: []const u8, sev: types.FailureSeverity) bool {
+    for (t.failures) |failure| {
+        if (failure.severity != sev) continue;
+        for (failure.event_ids) |eid| {
+            if (std.mem.eql(u8, eid, event_id)) return true;
+        }
+    }
+    return false;
+}
+
+/// Case-insensitive free-text match over the event's action, unique id, error
+/// fields, and payload (bounded scan of string keys/values).
+fn matchesText(e: types.Event, needle: []const u8) bool {
+    if (e.action) |a| if (containsCI(a, needle)) return true;
+    if (containsCI(e.message_id, needle)) return true;
+    if (e.error_code) |c| if (containsCI(c, needle)) return true;
+    if (e.error_description) |d| if (containsCI(d, needle)) return true;
+    return payloadContainsText(e.payload, needle, 0);
+}
+
+fn containsCI(haystack: []const u8, needle: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(haystack, needle) != null;
+}
+
+fn payloadContainsText(value: std.json.Value, needle: []const u8, depth: usize) bool {
+    if (depth > 4) return false;
+    switch (value) {
+        .string => |s| return containsCI(s, needle),
+        .number_string => |s| return containsCI(s, needle),
+        .array => |a| {
+            for (a.items, 0..) |item, i| {
+                if (i >= 32) break;
+                if (payloadContainsText(item, needle, depth + 1)) return true;
+            }
+            return false;
+        },
+        .object => |o| {
+            const keys = o.keys();
+            const vals = o.values();
+            for (keys, 0..) |k, i| {
+                if (i >= 32) break;
+                if (containsCI(k, needle)) return true;
+                if (payloadContainsText(vals[i], needle, depth + 1)) return true;
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
 // --- timeline pane: the windowed virtual list ------------------------------
 
-fn timelinePane(ui: *Ui, t: *const LoadedTrace) Node {
+/// `filtered` null = show all events (display index == event index); non-null =
+/// the filtered event indices, so only matching rows exist and hidden rows never
+/// become widgets (the window stays viewport-sized either way).
+fn timelinePane(ui: *Ui, t: *const LoadedTrace, filtered: ?[]const usize) Node {
+    const count = if (filtered) |fi| fi.len else t.events.len;
+    if (filtered != null and count == 0) {
+        return ui.column(.{ .min_width = 360, .grow = 1 }, .{
+            timelineHeader(ui),
+            ui.separator(.{}),
+            centeredNote(ui, "No matching events"),
+        });
+    }
     const opts = Ui.VirtualListOptions{
         .id = "event-timeline",
-        .item_count = t.events.len,
+        .item_count = count,
         .item_extent = row_extent,
         .overscan = 6,
         .grow = 1,
@@ -125,7 +274,8 @@ fn timelinePane(ui: *Ui, t: *const LoadedTrace) Node {
         return ui.column(.{ .min_width = 360, .grow = 1 }, .{});
     };
     for (rows, 0..) |*row, offset| {
-        const index = window.start_index + offset;
+        const display = window.start_index + offset;
+        const index = if (filtered) |fi| fi[display] else display;
         var node = eventRow(ui, t, index);
         node.key = .{ .int = @intCast(index) }; // identity = the event, not the slot
         row.* = node;
@@ -839,17 +989,24 @@ fn failuresSummary(arena: std.mem.Allocator, failures: []const types.Failure) []
 
 // --- status bar ------------------------------------------------------------
 
-fn statusBar(ui: *Ui, model: *const Model) Node {
+fn statusBar(ui: *Ui, model: *const Model, filtered: ?[]const usize) Node {
     const t = model.activeTrace().?;
-    const text = if (t.isError())
-        std.fmt.allocPrint(ui.arena, "Failed to load {s}: {s}", .{ t.name, t.load_error orelse "unknown error" }) catch "load failed"
-    else if (t.detection_skipped)
-        std.fmt.allocPrint(ui.arena, "{d} events \u{00B7} {d} sessions \u{00B7} detection skipped (large trace) \u{00B7} {d} parse warnings", .{
-            t.eventCount(), t.sessionCount(), t.warningCount(),
+    if (t.isError()) {
+        const msg = std.fmt.allocPrint(ui.arena, "Failed to load {s}: {s}", .{ t.name, t.load_error orelse "unknown error" }) catch "load failed";
+        return ui.statusBar(.{}, msg);
+    }
+    // When a filter is active the count reflects matches out of the whole trace.
+    const events_seg = if (filtered) |fi|
+        std.fmt.allocPrint(ui.arena, "{d} of {d} events", .{ fi.len, t.eventCount() }) catch ""
+    else
+        std.fmt.allocPrint(ui.arena, "{d} events", .{t.eventCount()}) catch "";
+    const text = if (t.detection_skipped)
+        std.fmt.allocPrint(ui.arena, "{s} \u{00B7} {d} sessions \u{00B7} detection skipped (large trace) \u{00B7} {d} parse warnings", .{
+            events_seg, t.sessionCount(), t.warningCount(),
         }) catch ""
     else
-        std.fmt.allocPrint(ui.arena, "{d} events \u{00B7} {d} sessions \u{00B7} {s} \u{00B7} {d} parse warnings", .{
-            t.eventCount(), t.sessionCount(), failuresSummary(ui.arena, t.failures), t.warningCount(),
+        std.fmt.allocPrint(ui.arena, "{s} \u{00B7} {d} sessions \u{00B7} {s} \u{00B7} {d} parse warnings", .{
+            events_seg, t.sessionCount(), failuresSummary(ui.arena, t.failures), t.warningCount(),
         }) catch "";
     return ui.statusBar(.{}, text);
 }
@@ -904,4 +1061,36 @@ test "failuresSummary breaks down nonzero severities" {
 
     const one = [_]types.Failure{testFailure(.heartbeat_interval_violation, .info, "evt-0001")};
     try testing.expectEqualStrings("1 failure: 1 info", failuresSummary(a, &one));
+}
+
+test "matchesText searches action, id, and payload case-insensitively" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const payload = std.json.parseFromSliceLeaky(
+        std.json.Value,
+        a,
+        "{\"idTag\":\"ABC123\",\"nested\":{\"reason\":\"Local\"}}",
+        .{},
+    ) catch unreachable;
+    const e = types.Event{
+        .id = "evt-0001",
+        .message_id = "msg-77",
+        .timestamp = null,
+        .direction = .cs_to_csms,
+        .message_type = .call,
+        .action = "Authorize",
+        .payload = payload,
+        .error_code = null,
+        .error_description = null,
+        .raw_message = .null,
+    };
+
+    try testing.expect(matchesText(e, "auth")); // action, case-insensitive
+    try testing.expect(matchesText(e, "MSG-77")); // unique id, case-insensitive
+    try testing.expect(matchesText(e, "abc123")); // payload string value
+    try testing.expect(matchesText(e, "idTag")); // payload key
+    try testing.expect(matchesText(e, "local")); // nested value, case-insensitive
+    try testing.expect(!matchesText(e, "zzz"));
 }

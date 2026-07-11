@@ -8,8 +8,10 @@
 
 ## Active milestone
 
-**S3 — Inspector UI (0.2.0): in progress.** The engine (S0–S2) is complete; the
-native inspector is now being built (see [ROADMAP.md](ROADMAP.md)).
+**S3 — Inspector UI (0.2.0): complete.** The engine (S0–S2) and the native
+inspector (open, virtualized timeline, message inspector, session + failure
+panels, search & filter) are done. Next up is **S4 — Analysis parity+ (0.3.0)**
+(see [ROADMAP.md](ROADMAP.md)).
 
 ## What's done
 
@@ -70,9 +72,9 @@ toolkit's:
 
 **Exit criteria met:** 15/15 scenarios match the locked goldens.
 
-## What's in progress
+### S3 — Inspector UI (0.2.0) ✅
 
-**S3 — Inspector UI (0.2.0).** Landed so far:
+Every issue landed:
 
 - **Inspector shell (#27)** — the placeholder counter is replaced by a Zig
   `canvas.Ui` builder view (ADR-0006), a bounded multi-trace workspace `Model` /
@@ -103,14 +105,20 @@ toolkit's:
   steps and affected events (accordion) and jumps to its primary event, so a
   failure and its evidence line up. A clean trace shows a positive
   "no failures detected" state; the status bar carries the severity breakdown.
+- **Search & filter (#32)** — a toolbar over the timeline: a free-text search
+  field (matching action / unique id / payload, case-insensitive) plus AND-composable
+  toggle facets (message type, direction, severity). The filtered index set is
+  derived in the build arena and drives the virtual list, so filtering a huge
+  trace stays viewport-sized (hidden rows never become widgets); the status bar
+  shows the match count and an empty result shows a quiet "no matching events".
 
-Still ahead in S3: search / filter (#32), which closes the milestone.
-Interactive open (native dialog + drag-drop) is deferred to #33 — it needs an
-ejected runner (see ADR-0006).
+Deferred out of S3: interactive open — native dialog + drag-drop (#33) — and the
+timeline viewport scroll on jump (session/failure), both of which need an ejected
+runner (see ADR-0006). Tracked as follow-ups, not blockers.
 
 ## What's next
 
-After S3: **S4 — Analysis parity+ (0.3.0)** — reports, anonymize, diff,
+**S4 — Analysis parity+ (0.3.0)** — reports (Markdown / HTML), anonymize, diff,
 wall-clock replay, and a headless CLI mode.
 
 ## Known blockers / decisions pending
@@ -124,7 +132,7 @@ wall-clock replay, and a headless CLI mode.
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ S2 + trusted ingestion (#29); O(n) detection pending (#36) |
-| `ui` (native views) | 🚧 shell + timeline + inspector + failure panel (S3, #27–#28, #30–#31); search next |
+| `ui` (native views) | ✅ S3 inspector — timeline, message inspector, session + failure panels, search & filter (#27–#32) |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |

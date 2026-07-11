@@ -23,8 +23,8 @@ studio/
 ├── src/
 │   ├── main.zig             # app wiring + CLI-arg trace loading (re-exports the TEA types)
 │   ├── ui/                  # the inspector: builder view + workspace state
-│   │   ├── workspace.zig    #   Model, Msg, update — the bounded multi-trace workspace
-│   │   ├── inspector.zig    #   the canvas.Ui builder view (ADR-0006)
+│   │   ├── workspace.zig    #   Model, Msg, update — traces, selection, filter/search state
+│   │   ├── inspector.zig    #   canvas.Ui builder view: timeline, inspector, panels, filter (ADR-0006)
 │   │   └── ui.zig           #   aggregate root (test discovery)
 │   ├── ocpp/                # pure, headless OCPP engine (types, parser, detection, …)
 │   │   └── conformance/     # vendored shared-contract fixtures + goldens + harness

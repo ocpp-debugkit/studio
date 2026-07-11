@@ -11,8 +11,8 @@ the stable part.
 | **S0** | 0.0.x | Foundation | ✅ Complete |
 | **S1** | 0.1.0 | Engine core | ✅ Complete |
 | **S2** | 0.1.0 | Detection + conformance | ✅ Complete |
-| **S3** | 0.2.0 | Inspector UI | Next up |
-| **S4** | 0.3.0 | Analysis parity+ | Planned |
+| **S3** | 0.2.0 | Inspector UI | ✅ Complete |
+| **S4** | 0.3.0 | Analysis parity+ | Next up |
 | **S5** | 0.4.0 | Live capture ⭐ | Planned |
 | **S6** | 1.0.0 | 1.0 polish | Planned |
 
@@ -40,11 +40,14 @@ detected failures against locked goldens generated from the toolkit.
 **Exit criteria met:** 15/15 scenarios match the `contract-v1` goldens under
 `native test`.
 
-## S3 — Inspector UI (0.2.0)
+## S3 — Inspector UI (0.2.0) ✅
 
-The native inspector: open and drag-drop traces, a virtualized event timeline,
-the per-message inspector, the failure panel, search / filter, and a
-multi-trace workspace. Handles traces far larger than a browser tab can hold.
+The native inspector: a virtualized event timeline, the per-message inspector
+(raw / normalized / payload tree), the session and failure panels, search /
+filter, and a multi-trace workspace — handling traces far larger than a browser
+tab can hold. Traces open from command-line paths and a built-in sample;
+interactive open (native dialog + drag-drop) is deferred to #33 (needs an
+ejected runner, ADR-0006).
 
 ## S4 — Analysis parity+ (0.3.0)
 
