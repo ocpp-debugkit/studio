@@ -72,18 +72,21 @@ toolkit's:
 
 ## What's in progress
 
-**S3 — Inspector UI (0.2.0).** The inspector shell has landed (#27): the
-placeholder counter is replaced by a Zig `canvas.Ui` builder view (ADR-0006), a
-bounded multi-trace workspace `Model` / `Msg` / `update` (`src/ui/`), and trace
-loading from command-line path arguments (read unbounded in `main` via
-`init.io`) plus a built-in embedded sample. The window opens on an empty state or
-the loaded trace's overview.
+**S3 — Inspector UI (0.2.0).** Landed so far:
 
-Still ahead in S3: the virtualized event timeline (#28), the trusted-ingestion
-capacity path for 500k-event / 100 MB traces (#29), the message inspector +
-session panel (#30), the failure panel (#31), and search / filter (#32).
-Interactive open (native dialog + drag-drop) is deferred to #33 — it needs an
-ejected runner (see ADR-0006).
+- **Inspector shell (#27)** — the placeholder counter is replaced by a Zig
+  `canvas.Ui` builder view (ADR-0006), a bounded multi-trace workspace `Model` /
+  `Msg` / `update` (`src/ui/`), and trace loading from command-line path
+  arguments (read unbounded in `main` via `init.io`) plus a built-in sample.
+- **Virtualized event timeline (#28)** — a windowed virtual list
+  (`ui.virtualList`) in a model-owned `split`: one row per event (severity dot,
+  time, direction, message, type), row selection, and a first-cut detail pane.
+  The window stays viewport-sized in widget nodes no matter the trace length.
+
+Still ahead in S3: the trusted-ingestion capacity path for 500k-event / 100 MB
+traces (#29), the full message inspector + session panel (#30), the failure panel
+(#31), and search / filter (#32). Interactive open (native dialog + drag-drop) is
+deferred to #33 — it needs an ejected runner (see ADR-0006).
 
 ## What's next
 
@@ -101,7 +104,7 @@ wall-clock replay, and a headless CLI mode.
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ done for S2 |
-| `ui` (native views) | 🚧 shell landed (S3, #27); timeline + panes next |
+| `ui` (native views) | 🚧 shell + timeline (S3, #27–#28); panes + search next |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |
