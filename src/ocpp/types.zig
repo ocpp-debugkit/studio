@@ -192,6 +192,78 @@ pub const Session = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Failure detection model
+// ---------------------------------------------------------------------------
+
+/// Severity of a detected failure.
+pub const FailureSeverity = enum {
+    critical,
+    warning,
+    info,
+
+    pub fn toWire(self: FailureSeverity) []const u8 {
+        return switch (self) {
+            .critical => "critical",
+            .warning => "warning",
+            .info => "info",
+        };
+    }
+};
+
+/// The OCPP 1.6J failure taxonomy — the 16 detection-rule codes (see
+/// detection.zig). Wire strings match the toolkit's `FailureCode` union.
+pub const FailureCode = enum {
+    failed_authorization,
+    connector_fault,
+    station_offline_during_session,
+    timeout_no_heartbeat,
+    meter_value_gap,
+    invalid_stop_reason,
+    unexpected_start,
+    status_transition_violation,
+    diagnostics_failure,
+    firmware_update_failure,
+    suspicious_session_duration,
+    slow_response,
+    heartbeat_interval_violation,
+    meter_value_anomaly,
+    unresponsive_csms,
+    repeated_boot_notification,
+
+    pub fn toWire(self: FailureCode) []const u8 {
+        return switch (self) {
+            .failed_authorization => "FAILED_AUTHORIZATION",
+            .connector_fault => "CONNECTOR_FAULT",
+            .station_offline_during_session => "STATION_OFFLINE_DURING_SESSION",
+            .timeout_no_heartbeat => "TIMEOUT_NO_HEARTBEAT",
+            .meter_value_gap => "METER_VALUE_GAP",
+            .invalid_stop_reason => "INVALID_STOP_REASON",
+            .unexpected_start => "UNEXPECTED_START",
+            .status_transition_violation => "STATUS_TRANSITION_VIOLATION",
+            .diagnostics_failure => "DIAGNOSTICS_FAILURE",
+            .firmware_update_failure => "FIRMWARE_UPDATE_FAILURE",
+            .suspicious_session_duration => "SUSPICIOUS_SESSION_DURATION",
+            .slow_response => "SLOW_RESPONSE",
+            .heartbeat_interval_violation => "HEARTBEAT_INTERVAL_VIOLATION",
+            .meter_value_anomaly => "METER_VALUE_ANOMALY",
+            .unresponsive_csms => "UNRESPONSIVE_CSMS",
+            .repeated_boot_notification => "REPEATED_BOOT_NOTIFICATION",
+        };
+    }
+};
+
+/// A detected failure in a trace.
+pub const Failure = struct {
+    code: FailureCode,
+    description: []const u8,
+    severity: FailureSeverity,
+    /// Event ids implicated in the failure.
+    event_ids: []const []const u8,
+    /// Suggested remediation steps.
+    suggested_steps: []const []const u8,
+};
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -228,6 +300,13 @@ test "Status maps to wire strings" {
     try testing.expectEqualStrings("active", Status.active.toWire());
     try testing.expectEqualStrings("completed", Status.completed.toWire());
     try testing.expectEqualStrings("aborted", Status.aborted.toWire());
+}
+
+test "Failure taxonomy encodes to contract wire strings" {
+    try testing.expectEqualStrings("FAILED_AUTHORIZATION", FailureCode.failed_authorization.toWire());
+    try testing.expectEqualStrings("REPEATED_BOOT_NOTIFICATION", FailureCode.repeated_boot_notification.toWire());
+    try testing.expectEqualStrings("critical", FailureSeverity.critical.toWire());
+    try testing.expectEqualStrings("info", FailureSeverity.info.toWire());
 }
 
 test "the model holds a parsed OCPP message end to end" {
