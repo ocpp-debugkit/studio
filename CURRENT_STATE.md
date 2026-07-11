@@ -8,7 +8,7 @@
 
 ## Active milestone
 
-**S0 — Foundation: complete.** Next up: **S1 — Engine core** (see
+**S1 — Engine core (0.1.0): in progress.** S0 — Foundation is complete (see
 [ROADMAP.md](ROADMAP.md)).
 
 ## What's done
@@ -34,14 +34,20 @@
 
 ## What's in progress
 
-- Nothing in flight — S0 is closed; S1 is next.
+**S1 — Engine core (0.1.0).** Building the pure-Zig engine module by module:
+
+- **Engine types & value boundary** (#11) — the `src/ocpp/` foundation: canonical
+  `Event` / `Session` / trace / parse-result types, the `Direction` /
+  `MessageType` / `Status` enums, and the `std.json.Value` payload boundary
+  (ADR-0005). Headless, imports no UI/runtime modules, tested via
+  `native test -Dplatform=null`.
+- Next: normalizer (#12), trace parser (#13), session timeline (#14).
 
 ## What's next
 
-**S1 — Engine core (0.1.0):** the pure-Zig OCPP engine — canonical `Event` /
-`Session` / `Failure` types, the parser (JSON object, JSONL, bare array), the
-normalizer (direction inference + timestamp normalization), and session
-correlation by transaction id. Headless and testable via `native test`.
+**S2 — Detection + conformance (0.1.0):** the full OCPP 1.6J failure taxonomy in
+Zig, plus the conformance harness that runs the shared scenario fixtures and
+checks Studio's detected failures against locked goldens.
 
 ## Known blockers / decisions pending
 
@@ -53,7 +59,7 @@ correlation by transaction id. Headless and testable via `native test`.
 | --- | --- |
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
-| `ocpp` (engine) | ⬜ not started (S1) |
+| `ocpp` (engine) | 🚧 in progress (S1) |
 | `ui` (native views) | ⬜ placeholder (S3) |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |

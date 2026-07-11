@@ -14,3 +14,4 @@ supersedes the old one rather than editing history.
 | [0002](0002-macos-first-platforms.md) | macOS-first, Linux in CI, Windows post-1.0 | Accepted |
 | [0003](0003-native-rendered-ui.md) | Native-rendered UI, no WebView | Accepted |
 | [0004](0004-zig-native-sdk-zero-config.md) | Zig + Native SDK on the zero-config build | Accepted |
+| [0005](0005-engine-value-representation.md) | Engine value representation & version-tagged decoder boundary | Accepted |
