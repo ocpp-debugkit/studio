@@ -107,7 +107,7 @@ fn detectFormat(trimmed: []const u8) Format {
 // ---------------------------------------------------------------------------
 
 /// Validate a raw OCPP message array. Returns null if valid, else a reason.
-fn validateRawMessage(msg: std.json.Value) ?[]const u8 {
+pub fn validateRawMessage(msg: std.json.Value) ?[]const u8 {
     if (msg != .array) return "message must be an array";
     const items = msg.array.items;
     if (items.len < 2) return "message must have at least [MessageTypeId, UniqueId]";
