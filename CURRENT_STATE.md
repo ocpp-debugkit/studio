@@ -41,7 +41,11 @@
   `MessageType` / `Status` enums, and the `std.json.Value` payload boundary
   (ADR-0005). Headless, imports no UI/runtime modules, tested via
   `native test -Dplatform=null`.
-- Next: normalizer (#12), trace parser (#13), session timeline (#14).
+- **Event normalizer** (#12) — message classification, ISO 8601 / epoch-second /
+  epoch-millisecond timestamp normalization, and two-pass direction inference
+  (the CS↔CSMS action tables), producing canonical `Event`s. The toolkit's
+  normalizer test cases are ported.
+- Next: trace parser (#13), session timeline (#14).
 
 ## What's next
 

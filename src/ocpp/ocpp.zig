@@ -5,7 +5,9 @@
 //! (including `-Dplatform=null`). The UI consumes the engine through the Model.
 
 pub const types = @import("types.zig");
+pub const normalizer = @import("normalizer.zig");
 
 test {
     _ = types;
+    _ = normalizer;
 }
