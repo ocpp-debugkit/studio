@@ -227,6 +227,16 @@ fn ids2(arena: std.mem.Allocator, a: []const u8, b: []const u8) ![]const []const
 
 /// Detect failures across a trace's events and sessions. Failures are returned
 /// in contract order (rule by rule); allocations come from `arena`.
+/// Above this event count, callers should skip `detectFailures`: several rules
+/// are O(n²) in the event count (they mirror the toolkit's algorithms, written
+/// for browser-scale traces). A trusted trace far past this still parses,
+/// correlates, and is fully inspectable in the timeline — only the failure
+/// analysis is bounded. Making the rules O(n) so detection scales to the full
+/// trusted capacity is tracked as a follow-up (see ADR-0007). `detectFailures`
+/// itself does not enforce this — the workspace does — so small-trace callers
+/// (the conformance harness) are unaffected.
+pub const max_events_for_detection: usize = 50_000;
+
 pub fn detectFailures(arena: std.mem.Allocator, events: []const Event, sessions: []const Session) ![]Failure {
     var list: FailureList = .empty;
 

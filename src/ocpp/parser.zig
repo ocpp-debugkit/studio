@@ -1,10 +1,21 @@
-//! Trace parser — accepts **untrusted** input in JSON object, JSONL, or bare
-//! array format and produces normalized `Event`s, with per-entry warnings for
-//! malformed data. Mirrors the toolkit's `core/parser.ts` and `schemas.ts`.
+//! Trace parser — accepts input in JSON object, JSONL, or bare array format and
+//! produces normalized `Event`s, with per-entry warnings for malformed data.
+//! Mirrors the toolkit's `core/parser.ts` and `schemas.ts`.
 //!
-//! Security posture (untrusted input):
-//! - Input size is capped before parsing (`MAX_INPUT_SIZE_BYTES`).
-//! - Event count is capped after parsing (`MAX_EVENT_COUNT`).
+//! Ingestion trust (ADR-0007): the size and event-count caps are a `Limits`
+//! value chosen by the SOURCE. `parseTrace` applies the browser-scale
+//! `untrusted_limits` (10 MB / 10k) — the default for live sockets and pasted
+//! data. `parseTraceTrusted` applies `trusted_limits` (256 MB / 2M) for files the
+//! user explicitly opened, so Studio can inspect traces far past the browser's
+//! ceiling. Everything else is identical between the two.
+//!
+//! Security posture:
+//! - Input size is capped before parsing (`Limits.max_input_bytes`).
+//! - Event count is capped after parsing (`Limits.max_events`).
+//! - JSONL parses one line at a time, so no whole-file JSON tree is held: peak
+//!   memory past the input buffer is the arena of retained events, which the
+//!   limits bound. (Bare-array / object formats do build one tree; JSONL is the
+//!   format for the largest traces.)
 //! - JSON is parsed with `std.json` (no prototype/`__proto__` semantics exist in
 //!   Zig, so object-key pollution is a non-issue) into a caller-owned arena,
 //!   copying every string (`alloc_always`) so the result borrows only the arena.
@@ -24,11 +35,36 @@ const Direction = types.Direction;
 // Limits
 // ---------------------------------------------------------------------------
 
-/// Maximum input size in bytes (10 MB).
+/// Untrusted input size cap in bytes (10 MB) — matches the toolkit.
 pub const MAX_INPUT_SIZE_BYTES: usize = 10 * 1024 * 1024;
 
-/// Maximum number of events after parsing.
+/// Untrusted event-count cap (10k) — matches the toolkit.
 pub const MAX_EVENT_COUNT: usize = 10_000;
+
+/// Trusted input size cap in bytes (256 MB) — for files the user opened.
+pub const TRUSTED_MAX_INPUT_SIZE_BYTES: usize = 256 * 1024 * 1024;
+
+/// Trusted event-count cap (2,000,000) — comfortably past the 500k target,
+/// bounded so a pathological file cannot exhaust memory.
+pub const TRUSTED_MAX_EVENT_COUNT: usize = 2_000_000;
+
+/// Size and event-count caps for one parse, chosen by the source's trust level.
+pub const Limits = struct {
+    max_input_bytes: usize,
+    max_events: usize,
+};
+
+/// Browser-scale caps for untrusted sources (live capture, pasted data).
+pub const untrusted_limits = Limits{
+    .max_input_bytes = MAX_INPUT_SIZE_BYTES,
+    .max_events = MAX_EVENT_COUNT,
+};
+
+/// Raised caps for trusted sources (files the user explicitly opened).
+pub const trusted_limits = Limits{
+    .max_input_bytes = TRUSTED_MAX_INPUT_SIZE_BYTES,
+    .max_events = TRUSTED_MAX_EVENT_COUNT,
+};
 
 /// Excerpt of a malformed entry retained in a warning, in bytes.
 const RAW_EXCERPT_LEN: usize = 200;
@@ -202,12 +238,27 @@ fn parseJsonObject(arena: std.mem.Allocator, input: []const u8, events: *Events,
 // parseTrace
 // ---------------------------------------------------------------------------
 
-/// Parse a trace from a raw string into normalized events plus warnings.
+/// Parse an **untrusted** trace (live capture, pasted data) under the
+/// browser-scale `untrusted_limits`. The default entry point.
 ///
 /// Allocations come from `arena`; the returned `ParseResult` borrows from it and
 /// stays valid until it is freed. The caller owns the arena's lifetime.
 pub fn parseTrace(arena: std.mem.Allocator, input: []const u8) Error!ParseResult {
-    if (input.len > MAX_INPUT_SIZE_BYTES) return error.InputTooLarge;
+    return parseTraceWithLimits(arena, input, untrusted_limits);
+}
+
+/// Parse a **trusted** trace (a file the user explicitly opened) under the
+/// raised `trusted_limits`, so Studio can inspect traces far past the browser's
+/// 10 MB / 10k ceiling. Same parsing and validation as `parseTrace` — only the
+/// caps differ (ADR-0007).
+pub fn parseTraceTrusted(arena: std.mem.Allocator, input: []const u8) Error!ParseResult {
+    return parseTraceWithLimits(arena, input, trusted_limits);
+}
+
+/// Parse a trace under explicit ingestion `limits`. `parseTrace` /
+/// `parseTraceTrusted` are the two presets.
+pub fn parseTraceWithLimits(arena: std.mem.Allocator, input: []const u8, limits: Limits) Error!ParseResult {
+    if (input.len > limits.max_input_bytes) return error.InputTooLarge;
 
     const trimmed = std.mem.trim(u8, input, " \t\r\n");
     if (trimmed.len == 0) return error.EmptyInput;
@@ -231,7 +282,7 @@ pub fn parseTrace(arena: std.mem.Allocator, input: []const u8) Error!ParseResult
         },
     }
 
-    if (events.items.len > MAX_EVENT_COUNT) return error.TooManyEvents;
+    if (events.items.len > limits.max_events) return error.TooManyEvents;
     if (events.items.len == 0) return error.NoValidEvents;
 
     return .{
@@ -412,6 +463,48 @@ test "untrusted input: size and event-count limits" {
     }
     try buf.appendSlice(testing.allocator, "]}");
     try testing.expectError(error.TooManyEvents, parseTrace(a, buf.items));
+}
+
+test "trusted ingestion parses a dataset-scale trace past the untrusted cap" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A 500,000-event JSONL trace — 50x the untrusted cap. JSONL parses one line
+    // at a time (no whole-file tree); the arena bulk-allocates from its backing,
+    // so this is time- and memory-bounded, not a million tracked allocations.
+    const count: usize = 500_000;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        try buf.appendSlice(testing.allocator, "{\"message\":[2,\"m\",\"Heartbeat\",{}]}\n");
+    }
+
+    // The trusted path accepts and normalizes every event; the untrusted default
+    // would reject the same input with TooManyEvents.
+    const r = try parseTraceTrusted(a, buf.items);
+    try testing.expectEqual(count, r.events.len);
+    try testing.expectEqualStrings("evt-0001", r.events[0].id);
+    try testing.expectEqual(types.MessageType.call, r.events[count - 1].message_type);
+}
+
+test "parseTraceWithLimits honors explicit caps (both trust presets share it)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Byte cap: an input past max_input_bytes is rejected before parsing.
+    try testing.expectError(error.InputTooLarge, parseTraceWithLimits(a, "{\"events\":[]}", .{ .max_input_bytes = 4, .max_events = 10 }));
+
+    // Event cap: two events exceed a max_events of 1.
+    const two =
+        \\{"events":[{"message":[2,"a","Heartbeat",{}]},{"message":[2,"b","Heartbeat",{}]}]}
+    ;
+    try testing.expectError(error.TooManyEvents, parseTraceWithLimits(a, two, .{ .max_input_bytes = 1 << 20, .max_events = 1 }));
+    // The same input is fine when the cap admits it.
+    const ok = try parseTraceWithLimits(a, two, .{ .max_input_bytes = 1 << 20, .max_events = 2 });
+    try testing.expectEqual(@as(usize, 2), ok.events.len);
 }
 
 test "untrusted input: object-key pollution is inert" {

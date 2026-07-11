@@ -36,6 +36,10 @@ pub const LoadedTrace = struct {
     warnings: []types.ParseWarning = &.{},
     /// Non-null when the trace could not be parsed; a human-readable reason.
     load_error: ?[]const u8 = null,
+    /// True when failure detection was skipped because the trace exceeds
+    /// `detection.max_events_for_detection` (ADR-0007). The trace is still fully
+    /// parsed, correlated, and inspectable; `failures` is empty.
+    detection_skipped: bool = false,
     /// The timeline row the user selected, if any (wired in the timeline PR).
     selected_event: ?usize = null,
 
@@ -209,12 +213,28 @@ fn loadTrace(backing: std.mem.Allocator, name: []const u8, bytes: []const u8) Lo
         return .{ .name = "", .load_error = "out of memory" };
     };
 
-    const parsed = parser.parseTrace(a, bytes) catch |err| {
+    // Files reach the workspace because the user opened them (command line, and
+    // later a dialog / drag-drop), so they parse under the trusted limits
+    // (ADR-0007) — 256 MB / 2M events, far past the browser's ceiling.
+    const parsed = parser.parseTraceTrusted(a, bytes) catch |err| {
         return .{ .arena = arena_ptr, .name = name_copy, .load_error = @errorName(err) };
     };
     const sessions = timeline.buildSessionTimeline(a, parsed.events) catch |err| {
         return .{ .arena = arena_ptr, .name = name_copy, .events = parsed.events, .warnings = parsed.warnings, .load_error = @errorName(err) };
     };
+
+    // Failure detection has O(n²) rules (ADR-0007); skip it past the cap so a
+    // huge trace still opens instantly and stays fully inspectable.
+    if (parsed.events.len > detection.max_events_for_detection) {
+        return .{
+            .arena = arena_ptr,
+            .name = name_copy,
+            .events = parsed.events,
+            .sessions = sessions,
+            .warnings = parsed.warnings,
+            .detection_skipped = true,
+        };
+    }
     const failures = detection.detectFailures(a, parsed.events, sessions) catch |err| {
         return .{ .arena = arena_ptr, .name = name_copy, .events = parsed.events, .sessions = sessions, .warnings = parsed.warnings, .load_error = @errorName(err) };
     };
@@ -342,6 +362,37 @@ test "the splitter fraction is model-owned and echoed by update" {
     try testing.expectApproxEqAbs(@as(f32, 0.62), model.timeline_split, 0.0001);
     update(&model, .{ .timeline_resized = 0.4 });
     try testing.expectApproxEqAbs(@as(f32, 0.4), model.timeline_split, 0.0001);
+}
+
+test "a trace past the detection cap loads fully but skips detection" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    // One event past the cap: it must still parse and correlate, but detection
+    // is skipped (its O(n^2) rules would stall) — the trace stays inspectable.
+    const count = detection.max_events_for_detection + 1;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        try buf.appendSlice(testing.allocator, "{\"message\":[2,\"m\",\"Heartbeat\",{}]}\n");
+    }
+
+    model.openBytes("big.jsonl", buf.items);
+    const t = model.activeTrace().?;
+    try testing.expect(!t.isError());
+    try testing.expectEqual(count, t.eventCount());
+    try testing.expect(t.detection_skipped);
+    try testing.expectEqual(@as(usize, 0), t.failureCount());
+}
+
+test "the sample trace stays under the cap and runs detection" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .open_sample);
+    // 22 events, well under the cap: detection ran (and found nothing, as it's a
+    // clean session).
+    try testing.expect(!model.activeTrace().?.detection_skipped);
 }
 
 test "the workspace is bounded at max_open_traces" {
