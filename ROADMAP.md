@@ -8,19 +8,19 @@ the stable part.
 
 | Milestone | Version | Theme | Status |
 | --- | --- | --- | --- |
-| **S0** | 0.0.x | Foundation | ✅ In progress |
-| **S1** | 0.1.0 | Engine core | Next |
+| **S0** | 0.0.x | Foundation | ✅ Complete |
+| **S1** | 0.1.0 | Engine core | Next up |
 | **S2** | 0.1.0 | Detection + conformance | Planned |
 | **S3** | 0.2.0 | Inspector UI | Planned |
 | **S4** | 0.3.0 | Analysis parity+ | Planned |
 | **S5** | 0.4.0 | Live capture ⭐ | Planned |
 | **S6** | 1.0.0 | 1.0 polish | Planned |
 
-## S0 — Foundation (0.0.x)
+## S0 — Foundation (0.0.x) ✅
 
 Repo, tooling, and CI. A native window that opens, an automation-driven smoke
-test, founding docs, and architecture decision records. **Exit:** CI green on
-macOS + Linux; `native doctor --strict` clean.
+test, founding docs, and architecture decision records. **Exit criteria met:**
+CI green on macOS + Linux; `native doctor --strict` clean.
 
 ## S1 — Engine core (0.1.0)
 
