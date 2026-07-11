@@ -14,7 +14,17 @@ the stable part.
 | **S3** | 0.2.0 | Inspector UI | ✅ Complete |
 | **S4** | 0.3.0 | Analysis parity+ | ✅ Complete |
 | **S5** | 0.4.0 | Live capture ⭐ | Planned |
-| **S6** | 1.0.0 | 1.0 polish & launch | Planned |
+| **S6** | 0.5.0 | Public release & launch | Planned |
+
+## Versioning
+
+Studio stays in the `0.x` range until its foundations settle. Zig, the Native
+SDK, and the toolkit — Studio's conformance reference, itself `0.3.x` — are all
+pre-1.0 and still make breaking changes. A `1.0` waits for that ground to
+stabilize: releasing one on a shifting substrate would claim more stability than
+the stack, or the reference implementation Studio mirrors, actually offers.
+Until then, `0.x` minors may carry breaking changes, always called out in the
+release notes.
 
 ## S0 — Foundation (0.0.x) ✅
 
@@ -68,11 +78,11 @@ to the canonical trace format, and surfacing it all in a live timeline — with
 OS notifications on critical failures. This is the capability a browser tab
 cannot provide, and the reason Studio exists.
 
-## S6 — 1.0 polish & launch (1.0.0)
+## S6 — Public release & launch (0.5.0)
 
 A signed macOS app and a Linux package, a menu-bar live monitor, a complete
 docs set, an automation-driven GUI test suite, and the frozen conformance
-contract. Public 1.0 release.
+contract — Studio's first packaged, signed public release.
 
 Studio also joins the ecosystem's web presence: a **Studio section on
 [ocppdebugkit.com](https://ocppdebugkit.com)** — a `/studio` page (positioning,
@@ -86,7 +96,7 @@ site's live inspector already depends on the toolkit's workspace packages and
 Studio coverage is static content; revisit only if the site later needs an
 independent brand or deploy cadence.
 
-## Beyond 1.0
+## Beyond 0.5
 
 Sequenced one theme per minor: a message composer / playground, a charge-point
 simulator, a CSMS mock, an active scenario runner (running the assertion suite
