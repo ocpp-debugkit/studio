@@ -244,6 +244,14 @@ pub fn detectFailures(arena: std.mem.Allocator, events: []const Event, sessions:
     try detectDiagnosticsFailure(arena, events, &list);
     try detectFirmwareUpdateFailure(arena, events, &list);
 
+    // Timing & anomaly rules (contract rules 11–16).
+    try detectSuspiciousSessionDuration(arena, sessions, &list);
+    try detectSlowResponse(arena, events, &list);
+    try detectHeartbeatIntervalViolation(arena, events, &list);
+    try detectMeterValueAnomaly(arena, sessions, &list);
+    try detectUnresponsiveCsms(arena, events, &list);
+    try detectRepeatedBootNotification(arena, events, &list);
+
     return list.toOwnedSlice(arena);
 }
 
@@ -623,6 +631,269 @@ fn detectFirmwareUpdateFailure(arena: std.mem.Allocator, events: []const Event, 
 }
 
 // ---------------------------------------------------------------------------
+// Timing & anomaly rules — constants
+// ---------------------------------------------------------------------------
+
+/// A transaction session shorter than this is suspicious (60 s).
+const min_session_duration_ms: i64 = 60_000;
+
+/// A transaction session longer than this is suspicious (24 h).
+const max_session_duration_ms: i64 = 24 * 60 * 60 * 1000;
+
+/// A Call→response gap over this is slow (10 s).
+const slow_response_threshold_ms: i64 = 10_000;
+
+/// Heartbeat gaps deviating more than this fraction are violations (50%).
+const heartbeat_deviation_threshold: f64 = 0.5;
+
+/// Window for counting repeated BootNotifications (5 min).
+const repeated_boot_window_ms: i64 = 5 * 60 * 1000;
+
+fn roundedDiv(numerator: i64, denom: i64) i64 {
+    return @intFromFloat(@round(@as(f64, @floatFromInt(numerator)) / @as(f64, @floatFromInt(denom))));
+}
+
+/// The start/stop transaction event ids of a session (a rule's typical anchors).
+fn transactionEventIds(arena: std.mem.Allocator, session: Session) ![]const []const u8 {
+    var ids: std.ArrayList([]const u8) = .empty;
+    for (session.events) |e| {
+        if (isCall(e, "StartTransaction") or isCall(e, "StopTransaction")) try ids.append(arena, e.id);
+    }
+    return ids.toOwnedSlice(arena);
+}
+
+// ---------------------------------------------------------------------------
+// Rule 11: SUSPICIOUS_SESSION_DURATION
+// ---------------------------------------------------------------------------
+
+/// A transaction session shorter than 60 s or longer than 24 h.
+fn detectSuspiciousSessionDuration(arena: std.mem.Allocator, sessions: []const Session, list: *FailureList) !void {
+    for (sessions) |session| {
+        const tx = session.transaction_id orelse continue;
+        const start = session.start_time orelse continue;
+        const end = session.end_time orelse continue;
+        const duration = end - start;
+
+        if (duration < min_session_duration_ms) {
+            const desc = try std.fmt.allocPrint(
+                arena,
+                "Session {s} (transaction {d}) lasted only {d}ms — suspiciously short session may indicate aborted start or authorization failure",
+                .{ session.session_id, tx, duration },
+            );
+            try add(arena, list, .suspicious_session_duration, desc, try transactionEventIds(arena, session));
+        } else if (duration > max_session_duration_ms) {
+            const desc = try std.fmt.allocPrint(
+                arena,
+                "Session {s} (transaction {d}) lasted {d} hours — suspiciously long session may indicate forgotten charging or missing StopTransaction",
+                .{ session.session_id, tx, roundedDiv(duration, 60 * 60 * 1000) },
+            );
+            try add(arena, list, .suspicious_session_duration, desc, try transactionEventIds(arena, session));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 12: SLOW_RESPONSE
+// ---------------------------------------------------------------------------
+
+/// A Call whose matching response arrived more than 10 s later.
+fn detectSlowResponse(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    var response_ts = std.StringHashMap(i64).init(arena);
+    defer response_ts.deinit();
+    for (events) |e| {
+        if (e.message_type == .call_result or e.message_type == .call_error) {
+            if (e.timestamp) |ts| try response_ts.put(e.message_id, ts);
+        }
+    }
+
+    for (events) |call| {
+        if (call.message_type != .call) continue;
+        const call_ts = call.timestamp orelse continue;
+        const resp_ts = response_ts.get(call.message_id) orelse continue; // no response → rule 15
+
+        const gap = resp_ts - call_ts;
+        if (gap <= slow_response_threshold_ms) continue;
+
+        const desc = try std.fmt.allocPrint(
+            arena,
+            "Response to {s} (messageId: {s}) took {d}s — exceeds {d}s threshold",
+            .{ call.action orelse "Call", call.message_id, roundedDiv(gap, 1000), @divTrunc(slow_response_threshold_ms, 1000) },
+        );
+        try add(arena, list, .slow_response, desc, try arena.dupe([]const u8, &[_][]const u8{call.id}));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 13: HEARTBEAT_INTERVAL_VIOLATION
+// ---------------------------------------------------------------------------
+
+/// Consecutive heartbeat gaps deviating more than 50% from the expected interval.
+fn detectHeartbeatIntervalViolation(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    var expected: i64 = default_heartbeat_interval_ms;
+    for (events) |e| {
+        if (isCall(e, "BootNotification")) {
+            expected = heartbeatIntervalMs(events, e);
+            break;
+        }
+    }
+    if (expected == 0) return;
+
+    var prev: ?Event = null;
+    for (events) |event| {
+        if (!isCall(event, "Heartbeat")) continue;
+        if (event.timestamp == null) continue;
+
+        if (prev) |p| {
+            const gap = event.timestamp.? - p.timestamp.?;
+            const deviation = @abs(@as(f64, @floatFromInt(gap - expected))) / @as(f64, @floatFromInt(expected));
+            if (deviation > heartbeat_deviation_threshold) {
+                const desc = try std.fmt.allocPrint(
+                    arena,
+                    "Heartbeat interval deviation: {d}s between heartbeats, expected ~{d}s ({d}% deviation)",
+                    .{ roundedDiv(gap, 1000), roundedDiv(expected, 1000), @as(i64, @intFromFloat(@round(deviation * 100.0))) },
+                );
+                try add(arena, list, .heartbeat_interval_violation, desc, try ids2(arena, p.id, event.id));
+            }
+        }
+        prev = event;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 14: METER_VALUE_ANOMALY
+// ---------------------------------------------------------------------------
+
+const Reading = struct { event_id: []const u8, value: f64 };
+
+/// Negative or non-monotonic (decreasing) meter readings within a transaction.
+fn detectMeterValueAnomaly(arena: std.mem.Allocator, sessions: []const Session, list: *FailureList) !void {
+    for (sessions) |session| {
+        const tx = session.transaction_id orelse continue;
+
+        var readings: std.ArrayList(Reading) = .empty;
+        for (session.events) |event| {
+            if (!isCall(event, "MeterValues") or event.payload != .object) continue;
+            const meter_value = event.payload.object.get("meterValue") orelse continue;
+            if (meter_value != .array) continue;
+            for (meter_value.array.items) |mv| {
+                if (mv != .object) continue;
+                const sampled = mv.object.get("sampledValue") orelse continue;
+                if (sampled != .array) continue;
+                for (sampled.array.items) |sv| {
+                    if (sv != .object) continue;
+                    const raw = sv.object.get("value") orelse continue;
+                    const value: ?f64 = switch (raw) {
+                        .string => |s| std.fmt.parseFloat(f64, s) catch null,
+                        .integer => |n| @floatFromInt(n),
+                        .float => |f| f,
+                        else => null,
+                    };
+                    if (value) |v| try readings.append(arena, .{ .event_id = event.id, .value = v });
+                }
+            }
+        }
+        if (readings.items.len == 0) continue;
+
+        for (readings.items) |reading| {
+            if (reading.value < 0) {
+                const desc = try std.fmt.allocPrint(
+                    arena,
+                    "Negative meter value detected: {d} in session {s} (transaction {d})",
+                    .{ reading.value, session.session_id, tx },
+                );
+                try add(arena, list, .meter_value_anomaly, desc, try arena.dupe([]const u8, &[_][]const u8{reading.event_id}));
+            }
+        }
+
+        var i: usize = 1;
+        while (i < readings.items.len) : (i += 1) {
+            const prev = readings.items[i - 1];
+            const curr = readings.items[i];
+            if (curr.value < prev.value) {
+                const desc = try std.fmt.allocPrint(
+                    arena,
+                    "Non-monotonic meter reading: value decreased from {d} to {d} in session {s} (transaction {d})",
+                    .{ prev.value, curr.value, session.session_id, tx },
+                );
+                try add(arena, list, .meter_value_anomaly, desc, try ids2(arena, prev.event_id, curr.event_id));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 15: UNRESPONSIVE_CSMS
+// ---------------------------------------------------------------------------
+
+/// A Call with no matching CallResult or CallError.
+fn detectUnresponsiveCsms(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    var responded = std.StringHashMap(void).init(arena);
+    defer responded.deinit();
+    for (events) |e| {
+        if (e.message_type == .call_result or e.message_type == .call_error) {
+            try responded.put(e.message_id, {});
+        }
+    }
+
+    for (events) |call| {
+        if (call.message_type != .call) continue;
+        if (responded.contains(call.message_id)) continue;
+
+        const desc = try std.fmt.allocPrint(
+            arena,
+            "No response received for {s} Call (messageId: {s}) — CSMS did not respond with CallResult or CallError",
+            .{ call.action orelse "Call", call.message_id },
+        );
+        try add(arena, list, .unresponsive_csms, desc, try arena.dupe([]const u8, &[_][]const u8{call.id}));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 16: REPEATED_BOOT_NOTIFICATION
+// ---------------------------------------------------------------------------
+
+fn lessByTimestamp(_: void, a: Event, b: Event) bool {
+    return (a.timestamp orelse 0) < (b.timestamp orelse 0);
+}
+
+/// 2+ BootNotification Calls within a 5-minute window.
+fn detectRepeatedBootNotification(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    var boots: std.ArrayList(Event) = .empty;
+    defer boots.deinit(arena);
+    for (events) |e| {
+        if (isCall(e, "BootNotification") and e.timestamp != null) try boots.append(arena, e);
+    }
+    std.mem.sort(Event, boots.items, {}, lessByTimestamp);
+
+    var i: usize = 0;
+    while (i < boots.items.len) : (i += 1) {
+        const first = boots.items[i];
+        const first_ts = first.timestamp.?;
+
+        var count: usize = 1;
+        var j = i + 1;
+        while (j < boots.items.len) : (j += 1) {
+            if (boots.items[j].timestamp.? - first_ts > repeated_boot_window_ms) break;
+            count += 1;
+        }
+
+        if (count >= 2) {
+            var boot_ids: std.ArrayList([]const u8) = .empty;
+            var k = i;
+            while (k < j) : (k += 1) try boot_ids.append(arena, boots.items[k].id);
+            const window_seconds = roundedDiv(boots.items[j - 1].timestamp.? - first_ts, 1000);
+            const desc = try std.fmt.allocPrint(
+                arena,
+                "{d} BootNotification calls detected within {d}s — station may be rebooting repeatedly or failing startup",
+                .{ count, window_seconds },
+            );
+            try add(arena, list, .repeated_boot_notification, desc, try boot_ids.toOwnedSlice(arena));
+            i = j - 1; // continue after this cluster
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -862,4 +1133,150 @@ test "DIAGNOSTICS_FAILURE and FIRMWARE_UPDATE_FAILURE fire on failure statuses" 
         \\{"events":[{"message":[2,"f1","FirmwareStatusNotification",{"status":"Installed"}]}]}
     );
     try testing.expect(!has(fw_ok, .firmware_update_failure));
+}
+
+test "SUSPICIOUS_SESSION_DURATION fires on a sub-minute transaction" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // ~30s transaction (with MeterValues, to isolate the duration signal).
+    const short = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]},
+        \\{"timestamp":"2024-01-15T10:00:00.500Z","message":[3,"s1",{"transactionId":10}]},
+        \\{"timestamp":"2024-01-15T10:00:15.000Z","message":[2,"mv","MeterValues",{"connectorId":1,"transactionId":10,"meterValue":[]}]},
+        \\{"timestamp":"2024-01-15T10:00:15.500Z","message":[3,"mv",{}]},
+        \\{"timestamp":"2024-01-15T10:00:30.000Z","message":[2,"e1","StopTransaction",{"transactionId":10,"meterStop":5,"reason":"Local"}]},
+        \\{"timestamp":"2024-01-15T10:00:30.500Z","message":[3,"e1",{"idTagInfo":{"status":"Accepted"}}]}]}
+    );
+    try testing.expect(has(short, .suspicious_session_duration));
+
+    // A 10-minute transaction is normal.
+    const normal = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]},
+        \\{"timestamp":"2024-01-15T10:00:00.500Z","message":[3,"s1",{"transactionId":11}]},
+        \\{"timestamp":"2024-01-15T10:05:00.000Z","message":[2,"mv","MeterValues",{"connectorId":1,"transactionId":11,"meterValue":[]}]},
+        \\{"timestamp":"2024-01-15T10:05:00.500Z","message":[3,"mv",{}]},
+        \\{"timestamp":"2024-01-15T10:10:00.000Z","message":[2,"e1","StopTransaction",{"transactionId":11,"meterStop":5,"reason":"Local"}]},
+        \\{"timestamp":"2024-01-15T10:10:00.500Z","message":[3,"e1",{"idTagInfo":{"status":"Accepted"}}]}]}
+    );
+    try testing.expect(!has(normal, .suspicious_session_duration));
+}
+
+test "SLOW_RESPONSE fires when a response lags past 10s" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const slow = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"h1","Heartbeat",{}]},
+        \\{"timestamp":"2024-01-15T10:00:15.000Z","message":[3,"h1",{}]}]}
+    );
+    try testing.expect(has(slow, .slow_response));
+
+    const fast = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"h1","Heartbeat",{}]},
+        \\{"timestamp":"2024-01-15T10:00:02.000Z","message":[3,"h1",{}]}]}
+    );
+    try testing.expect(!has(fast, .slow_response));
+}
+
+test "HEARTBEAT_INTERVAL_VIOLATION fires on a >50% gap deviation" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Default expected interval 60s; a 150s gap deviates 150%.
+    const irregular = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"h1","Heartbeat",{}]},
+        \\{"timestamp":"2024-01-15T10:00:00.500Z","message":[3,"h1",{}]},
+        \\{"timestamp":"2024-01-15T10:02:30.000Z","message":[2,"h2","Heartbeat",{}]},
+        \\{"timestamp":"2024-01-15T10:02:30.500Z","message":[3,"h2",{}]}]}
+    );
+    try testing.expect(has(irregular, .heartbeat_interval_violation));
+
+    // A steady 60s cadence is fine.
+    const steady = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"h1","Heartbeat",{}]},
+        \\{"timestamp":"2024-01-15T10:00:00.500Z","message":[3,"h1",{}]},
+        \\{"timestamp":"2024-01-15T10:01:00.000Z","message":[2,"h2","Heartbeat",{}]},
+        \\{"timestamp":"2024-01-15T10:01:00.500Z","message":[3,"h2",{}]}]}
+    );
+    try testing.expect(!has(steady, .heartbeat_interval_violation));
+}
+
+test "METER_VALUE_ANOMALY fires on a decreasing reading" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const decreasing = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]},
+        \\{"message":[3,"s1",{"transactionId":20}]},
+        \\{"message":[2,"mv1","MeterValues",{"connectorId":1,"transactionId":20,"meterValue":[{"sampledValue":[{"value":"5000"}]}]}]},
+        \\{"message":[3,"mv1",{}]},
+        \\{"message":[2,"mv2","MeterValues",{"connectorId":1,"transactionId":20,"meterValue":[{"sampledValue":[{"value":"3000"}]}]}]},
+        \\{"message":[3,"mv2",{}]}]}
+    );
+    try testing.expect(has(decreasing, .meter_value_anomaly));
+
+    const increasing = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]},
+        \\{"message":[3,"s1",{"transactionId":21}]},
+        \\{"message":[2,"mv1","MeterValues",{"connectorId":1,"transactionId":21,"meterValue":[{"sampledValue":[{"value":"5000"}]}]}]},
+        \\{"message":[3,"mv1",{}]},
+        \\{"message":[2,"mv2","MeterValues",{"connectorId":1,"transactionId":21,"meterValue":[{"sampledValue":[{"value":"10000"}]}]}]},
+        \\{"message":[3,"mv2",{}]}]}
+    );
+    try testing.expect(!has(increasing, .meter_value_anomaly));
+}
+
+test "UNRESPONSIVE_CSMS fires on an unanswered Call" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const dropped = try detect(a,
+        \\{"events":[{"message":[2,"h1","Heartbeat",{}]}]}
+    );
+    try testing.expect(has(dropped, .unresponsive_csms));
+
+    const answered = try detect(a,
+        \\{"events":[{"message":[2,"h1","Heartbeat",{}]},{"message":[3,"h1",{}]}]}
+    );
+    try testing.expect(!has(answered, .unresponsive_csms));
+}
+
+test "REPEATED_BOOT_NOTIFICATION fires on two boots inside the window" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Two boots 2 minutes apart (within the 5-minute window).
+    const rebooting = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"b1","BootNotification",{"chargePointSerialNumber":"CS-1"}]},
+        \\{"timestamp":"2024-01-15T10:00:00.500Z","message":[3,"b1",{"status":"Accepted","interval":300}]},
+        \\{"timestamp":"2024-01-15T10:02:00.000Z","message":[2,"b2","BootNotification",{"chargePointSerialNumber":"CS-1"}]},
+        \\{"timestamp":"2024-01-15T10:02:00.500Z","message":[3,"b2",{"status":"Accepted","interval":300}]}]}
+    );
+    try testing.expect(has(rebooting, .repeated_boot_notification));
+
+    // Two boots 10 minutes apart are not clustered.
+    const spaced = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"b1","BootNotification",{"chargePointSerialNumber":"CS-1"}]},
+        \\{"timestamp":"2024-01-15T10:00:00.500Z","message":[3,"b1",{"status":"Accepted","interval":300}]},
+        \\{"timestamp":"2024-01-15T10:10:00.000Z","message":[2,"b2","BootNotification",{"chargePointSerialNumber":"CS-1"}]},
+        \\{"timestamp":"2024-01-15T10:10:00.500Z","message":[3,"b2",{"status":"Accepted","interval":300}]}]}
+    );
+    try testing.expect(!has(spaced, .repeated_boot_notification));
 }
