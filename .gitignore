@@ -1,0 +1,14 @@
+# Zig / Native SDK build artifacts
+.native/
+zig-out/
+.zig-cache/
+
+# Packaged app bundles
+*.app/
+*.dmg
+
+# macOS
+.DS_Store
+
+# Editor scratch
+*.swp
