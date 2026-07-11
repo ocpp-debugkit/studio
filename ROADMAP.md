@@ -9,8 +9,8 @@ the stable part.
 | Milestone | Version | Theme | Status |
 | --- | --- | --- | --- |
 | **S0** | 0.0.x | Foundation | ✅ Complete |
-| **S1** | 0.1.0 | Engine core | Next up |
-| **S2** | 0.1.0 | Detection + conformance | Planned |
+| **S1** | 0.1.0 | Engine core | ✅ Complete |
+| **S2** | 0.1.0 | Detection + conformance | Next up |
 | **S3** | 0.2.0 | Inspector UI | Planned |
 | **S4** | 0.3.0 | Analysis parity+ | Planned |
 | **S5** | 0.4.0 | Live capture ⭐ | Planned |
@@ -22,12 +22,15 @@ Repo, tooling, and CI. A native window that opens, an automation-driven smoke
 test, founding docs, and architecture decision records. **Exit criteria met:**
 CI green on macOS + Linux; `native doctor --strict` clean.
 
-## S1 — Engine core (0.1.0)
+## S1 — Engine core (0.1.0) ✅
 
 The pure-Zig OCPP engine, headless and testable: canonical `Event` / `Session`
-/ `Failure` types, a parser for the three input formats (JSON object, JSONL,
-bare array), the normalizer (message-direction inference and timestamp
-normalization), and session correlation by transaction id.
+types and the `std.json.Value` value boundary (ADR-0005), a parser for the three
+input formats (JSON object, JSONL, bare array) with untrusted-input limits, the
+normalizer (message classification, timestamp normalization, and direction
+inference), and session correlation by transaction id. **Exit criteria met:** the
+vendored `normal-session` fixture parses and correlates end to end; engine tests
+run green headlessly (`native test -Dplatform=null`) on macOS + Linux.
 
 ## S2 — Detection + conformance (0.1.0)
 
