@@ -65,8 +65,10 @@ in Zig, mirroring the toolkit's `detection.ts`:
 - **Protocol & transaction rules** (#20) — rules 4–10: TIMEOUT_NO_HEARTBEAT,
   METER_VALUE_GAP, INVALID_STOP_REASON, UNEXPECTED_START,
   STATUS_TRANSITION_VIOLATION, DIAGNOSTICS_FAILURE, FIRMWARE_UPDATE_FAILURE.
-- Next: timing & anomaly rules (#21) and the conformance harness over the 15
-  shared scenarios (#22).
+- **Timing & anomaly rules** (#21) — rules 11–16: SUSPICIOUS_SESSION_DURATION,
+  SLOW_RESPONSE, HEARTBEAT_INTERVAL_VIOLATION, METER_VALUE_ANOMALY,
+  UNRESPONSIVE_CSMS, REPEATED_BOOT_NOTIFICATION. All 16 rules now run.
+- Next: the conformance harness over the 15 shared scenarios (#22).
 
 ## What's next
 
