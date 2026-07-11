@@ -10,8 +10,8 @@ the stable part.
 | --- | --- | --- | --- |
 | **S0** | 0.0.x | Foundation | ✅ Complete |
 | **S1** | 0.1.0 | Engine core | ✅ Complete |
-| **S2** | 0.1.0 | Detection + conformance | Next up |
-| **S3** | 0.2.0 | Inspector UI | Planned |
+| **S2** | 0.1.0 | Detection + conformance | ✅ Complete |
+| **S3** | 0.2.0 | Inspector UI | Next up |
 | **S4** | 0.3.0 | Analysis parity+ | Planned |
 | **S5** | 0.4.0 | Live capture ⭐ | Planned |
 | **S6** | 1.0.0 | 1.0 polish | Planned |
@@ -32,11 +32,13 @@ inference), and session correlation by transaction id. **Exit criteria met:** th
 vendored `normal-session` fixture parses and correlates end to end; engine tests
 run green headlessly (`native test -Dplatform=null`) on macOS + Linux.
 
-## S2 — Detection + conformance (0.1.0)
+## S2 — Detection + conformance (0.1.0) ✅
 
-The full OCPP 1.6J failure taxonomy in Zig, plus the conformance harness that
-runs the shared scenario fixtures and checks Studio's detected failures against
-locked goldens. **Exit:** the shared scenarios match, byte for byte.
+The full OCPP 1.6J failure taxonomy in Zig — all 16 detection rules — plus the
+conformance harness that runs the 15 shared scenario fixtures and checks Studio's
+detected failures against locked goldens generated from the toolkit.
+**Exit criteria met:** 15/15 scenarios match the `contract-v1` goldens under
+`native test`.
 
 ## S3 — Inspector UI (0.2.0)
 
