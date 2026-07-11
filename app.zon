@@ -13,8 +13,10 @@
             .{
                 .label = "main",
                 .title = "OCPP DebugKit Studio",
-                .width = 480,
-                .height = 320,
+                .width = 1200,
+                .height = 800,
+                .min_width = 900,
+                .min_height = 560,
                 .restore_state = false,
                 .restore_policy = "center_on_primary",
                 .views = .{
