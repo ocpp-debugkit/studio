@@ -45,7 +45,11 @@
   epoch-millisecond timestamp normalization, and two-pass direction inference
   (the CS↔CSMS action tables), producing canonical `Event`s. The toolkit's
   normalizer test cases are ported.
-- Next: trace parser (#13), session timeline (#14).
+- **Trace parser** (#13) — JSON object / JSONL / bare-array formats with format
+  detection, structural validation, per-entry warnings for malformed data, and
+  the untrusted-input limits (10 MB input, 10 000 events). Parses into a
+  caller-owned arena. The toolkit's parser test cases are ported.
+- Next: session timeline (#14).
 
 ## What's next
 
