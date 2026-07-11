@@ -172,6 +172,13 @@ fn payloadStr(payload: std.json.Value, key: []const u8) ?[]const u8 {
     return if (v == .string) v.string else null;
 }
 
+fn inList(list: []const []const u8, value: []const u8) bool {
+    for (list) |item| {
+        if (std.mem.eql(u8, item, value)) return true;
+    }
+    return false;
+}
+
 /// idTagInfo.status from a CallResult (Authorize response).
 fn authorizeStatus(e: Event) ?[]const u8 {
     if (e.message_type != .call_result or e.payload != .object) return null;
@@ -227,6 +234,15 @@ pub fn detectFailures(arena: std.mem.Allocator, events: []const Event, sessions:
     try detectFailedAuthorization(arena, events, &list);
     try detectConnectorFault(arena, events, &list);
     try detectStationOfflineDuringSession(arena, sessions, &list);
+
+    // Protocol & transaction rules (contract rules 4–10).
+    try detectTimeoutNoHeartbeat(arena, events, &list);
+    try detectMeterValueGap(arena, sessions, &list);
+    try detectInvalidStopReason(arena, events, &list);
+    try detectUnexpectedStart(arena, events, &list);
+    try detectStatusTransitionViolation(arena, events, &list);
+    try detectDiagnosticsFailure(arena, events, &list);
+    try detectFirmwareUpdateFailure(arena, events, &list);
 
     return list.toOwnedSlice(arena);
 }
@@ -363,6 +379,250 @@ fn detectStationOfflineDuringSession(arena: std.mem.Allocator, sessions: []const
 }
 
 // ---------------------------------------------------------------------------
+// Protocol & transaction rules — constants
+// ---------------------------------------------------------------------------
+
+/// OCPP 1.6 default heartbeat interval.
+const default_heartbeat_interval_ms: i64 = 60_000;
+
+/// Valid OCPP 1.6 StopTransaction reasons.
+const valid_stop_reasons = [_][]const u8{
+    "EmergencyStop", "EVDisconnected", "HardReset", "Local",         "Other",        "PowerLoss",
+    "Reboot",        "Remote",         "SoftReset", "UnlockCommand", "DeAuthorized",
+};
+
+/// Valid OCPP 1.6 connector statuses.
+const valid_connector_statuses = [_][]const u8{
+    "Available", "Preparing", "Charging",    "SuspendedEVSE", "SuspendedEV",
+    "Finishing", "Reserved",  "Unavailable", "Faulted",
+};
+
+/// FirmwareStatusNotification statuses that indicate a failed update.
+const firmware_failure_statuses = [_][]const u8{
+    "DownloadFailed", "DownloadPaused", "InstallFailed", "InstallRebootingFailed",
+};
+
+/// The OCPP 1.6 connector state model: allowed successor statuses per status.
+/// An unknown predecessor imposes no constraint (matches the contract).
+fn isValidTransition(from: []const u8, to: []const u8) bool {
+    const allowed: []const []const u8 =
+        if (std.mem.eql(u8, from, "Available")) &.{ "Preparing", "Charging", "Reserved", "Unavailable", "Faulted" } else if (std.mem.eql(u8, from, "Preparing")) &.{ "Charging", "Available", "SuspendedEVSE", "Faulted", "Unavailable" } else if (std.mem.eql(u8, from, "Charging")) &.{ "SuspendedEVSE", "SuspendedEV", "Finishing", "Available", "Faulted" } else if (std.mem.eql(u8, from, "SuspendedEVSE")) &.{ "Charging", "Finishing", "Available", "Faulted" } else if (std.mem.eql(u8, from, "SuspendedEV")) &.{ "Charging", "Finishing", "Available", "Faulted" } else if (std.mem.eql(u8, from, "Finishing")) &.{ "Available", "Reserved", "Faulted" } else if (std.mem.eql(u8, from, "Reserved")) &.{ "Available", "Unavailable", "Faulted" } else if (std.mem.eql(u8, from, "Unavailable")) &.{ "Available", "Faulted" } else if (std.mem.eql(u8, from, "Faulted")) &.{ "Unavailable", "Available" } else return true;
+    return inList(allowed, to);
+}
+
+/// The heartbeat interval (ms) from a BootNotification's response, else default.
+fn heartbeatIntervalMs(events: []const Event, boot: Event) i64 {
+    for (events) |e| {
+        if (e.message_type != .call_result or !std.mem.eql(u8, e.message_id, boot.message_id)) continue;
+        if (e.payload != .object) continue;
+        const v = e.payload.object.get("interval") orelse continue;
+        return switch (v) {
+            .integer => |n| n * 1000,
+            .float => |f| @intFromFloat(@round(f * 1000.0)),
+            else => continue,
+        };
+    }
+    return default_heartbeat_interval_ms;
+}
+
+// ---------------------------------------------------------------------------
+// Rule 4: TIMEOUT_NO_HEARTBEAT
+// ---------------------------------------------------------------------------
+
+/// No Heartbeat within 2× the expected interval after BootNotification — only
+/// flagged when the trace actually extends past that threshold.
+fn detectTimeoutNoHeartbeat(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    var boot: ?Event = null;
+    for (events) |e| {
+        if (isCall(e, "BootNotification")) {
+            boot = e;
+            break;
+        }
+    }
+    const boot_event = boot orelse return;
+    const boot_ts = boot_event.timestamp orelse return;
+
+    const interval_ms = heartbeatIntervalMs(events, boot_event);
+    const threshold = boot_ts + interval_ms * 2;
+
+    var has_events_beyond = false;
+    for (events) |e| {
+        if (e.timestamp) |ts| if (ts > threshold) {
+            has_events_beyond = true;
+            break;
+        };
+    }
+    if (!has_events_beyond) return;
+
+    var has_heartbeat = false;
+    for (events) |e| {
+        if (isCall(e, "Heartbeat")) if (e.timestamp) |ts| if (ts <= threshold) {
+            has_heartbeat = true;
+            break;
+        };
+    }
+    if (has_heartbeat) return;
+
+    const desc = try std.fmt.allocPrint(
+        arena,
+        "No Heartbeat received within {d}s of BootNotification (expected every {d}s)",
+        .{ @divTrunc(interval_ms * 2, 1000), @divTrunc(interval_ms, 1000) },
+    );
+    try add(arena, list, .timeout_no_heartbeat, desc, try arena.dupe([]const u8, &[_][]const u8{boot_event.id}));
+}
+
+// ---------------------------------------------------------------------------
+// Rule 5: METER_VALUE_GAP
+// ---------------------------------------------------------------------------
+
+/// A completed transaction (Start + Stop) that reported no MeterValues.
+fn detectMeterValueGap(arena: std.mem.Allocator, sessions: []const Session, list: *FailureList) !void {
+    for (sessions) |session| {
+        const tx = session.transaction_id orelse continue;
+
+        var has_start = false;
+        var has_stop = false;
+        var has_meter = false;
+        var start_id: ?[]const u8 = null;
+        for (session.events) |e| {
+            if (isCall(e, "StartTransaction")) {
+                has_start = true;
+                if (start_id == null) start_id = e.id;
+            }
+            if (isCall(e, "StopTransaction")) has_stop = true;
+            if (isCall(e, "MeterValues")) has_meter = true;
+        }
+        if (!has_start or !has_stop or has_meter) continue;
+
+        const desc = try std.fmt.allocPrint(
+            arena,
+            "Session {s} (transaction {d}) has StartTransaction and StopTransaction but no MeterValues — metering data is missing",
+            .{ session.session_id, tx },
+        );
+        const event_ids = if (start_id) |sid|
+            try arena.dupe([]const u8, &[_][]const u8{sid})
+        else
+            &[_][]const u8{};
+        try add(arena, list, .meter_value_gap, desc, event_ids);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 6: INVALID_STOP_REASON
+// ---------------------------------------------------------------------------
+
+/// A StopTransaction whose reason is outside the OCPP 1.6 set.
+fn detectInvalidStopReason(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    for (events) |event| {
+        if (!isCall(event, "StopTransaction")) continue;
+        const reason = payloadStr(event.payload, "reason") orelse continue;
+        if (inList(&valid_stop_reasons, reason)) continue;
+
+        const desc = try std.fmt.allocPrint(
+            arena,
+            "StopTransaction has invalid stop reason \"{s}\" — not a valid OCPP 1.6 reason code (messageId: {s})",
+            .{ reason, event.message_id },
+        );
+        try add(arena, list, .invalid_stop_reason, desc, try arena.dupe([]const u8, &[_][]const u8{event.id}));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 7: UNEXPECTED_START
+// ---------------------------------------------------------------------------
+
+/// A StartTransaction with no preceding BootNotification or Authorize.
+fn detectUnexpectedStart(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    for (events, 0..) |event, i| {
+        if (!isCall(event, "StartTransaction")) continue;
+
+        var has_boot = false;
+        var has_authorize = false;
+        for (events[0..i]) |e| {
+            if (isCall(e, "BootNotification")) has_boot = true;
+            if (isCall(e, "Authorize")) has_authorize = true;
+        }
+        if (has_boot or has_authorize) continue;
+
+        const desc = try std.fmt.allocPrint(
+            arena,
+            "StartTransaction at event {s} without preceding BootNotification or Authorize — transaction started without proper initialization (messageId: {s})",
+            .{ event.id, event.message_id },
+        );
+        try add(arena, list, .unexpected_start, desc, try arena.dupe([]const u8, &[_][]const u8{event.id}));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 8: STATUS_TRANSITION_VIOLATION
+// ---------------------------------------------------------------------------
+
+/// An illegal connector status transition per the OCPP 1.6 state model.
+fn detectStatusTransitionViolation(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    var prev_status: ?[]const u8 = null;
+    var prev_event: ?Event = null;
+
+    for (events) |event| {
+        const status = statusNotificationStatus(event) orelse continue;
+        if (!inList(&valid_connector_statuses, status)) continue;
+
+        if (prev_status) |ps| if (prev_event) |pe| {
+            if (!isValidTransition(ps, status)) {
+                const desc = try std.fmt.allocPrint(
+                    arena,
+                    "Connector status transition from \"{s}\" to \"{s}\" is not a valid OCPP 1.6 transition (messageId: {s})",
+                    .{ ps, status, event.message_id },
+                );
+                try add(arena, list, .status_transition_violation, desc, try ids2(arena, pe.id, event.id));
+            }
+        };
+
+        prev_status = status;
+        prev_event = event;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 9: DIAGNOSTICS_FAILURE
+// ---------------------------------------------------------------------------
+
+/// A DiagnosticsStatusNotification reporting UploadFailed or DiagnosisFailed.
+fn detectDiagnosticsFailure(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    for (events) |event| {
+        if (!isCall(event, "DiagnosticsStatusNotification")) continue;
+        const status = payloadStr(event.payload, "status") orelse continue;
+        if (!std.mem.eql(u8, status, "UploadFailed") and !std.mem.eql(u8, status, "DiagnosisFailed")) continue;
+
+        const desc = try std.fmt.allocPrint(
+            arena,
+            "DiagnosticsStatusNotification reported failure status \"{s}\" (messageId: {s})",
+            .{ status, event.message_id },
+        );
+        try add(arena, list, .diagnostics_failure, desc, try arena.dupe([]const u8, &[_][]const u8{event.id}));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule 10: FIRMWARE_UPDATE_FAILURE
+// ---------------------------------------------------------------------------
+
+/// A FirmwareStatusNotification reporting a failed update.
+fn detectFirmwareUpdateFailure(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
+    for (events) |event| {
+        if (!isCall(event, "FirmwareStatusNotification")) continue;
+        const status = payloadStr(event.payload, "status") orelse continue;
+        if (!inList(&firmware_failure_statuses, status)) continue;
+
+        const desc = try std.fmt.allocPrint(
+            arena,
+            "FirmwareStatusNotification reported failure status \"{s}\" (messageId: {s})",
+            .{ status, event.message_id },
+        );
+        try add(arena, list, .firmware_update_failure, desc, try arena.dupe([]const u8, &[_][]const u8{event.id}));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -463,4 +723,143 @@ test "STATION_OFFLINE_DURING_SESSION fires on a start with no stop" {
         \\{"message":[3,"e1",{"idTagInfo":{"status":"Accepted"}}]}]}
     );
     try testing.expect(!has(completed, .station_offline_during_session));
+}
+
+test "TIMEOUT_NO_HEARTBEAT fires only when the trace runs past the threshold" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Boot at 10:00, interval 60s → threshold 10:02; an event at 10:05, no HB.
+    const timed_out = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"b1","BootNotification",{"chargePointSerialNumber":"CS-1"}]},
+        \\{"timestamp":"2024-01-15T10:00:00.500Z","message":[3,"b1",{"status":"Accepted","interval":60}]},
+        \\{"timestamp":"2024-01-15T10:05:00.000Z","message":[2,"n1","StatusNotification",{"connectorId":1,"status":"Available"}]}]}
+    );
+    try testing.expect(has(timed_out, .timeout_no_heartbeat));
+
+    // A Heartbeat before the threshold clears it.
+    const with_hb = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"b1","BootNotification",{"chargePointSerialNumber":"CS-1"}]},
+        \\{"timestamp":"2024-01-15T10:00:00.500Z","message":[3,"b1",{"status":"Accepted","interval":60}]},
+        \\{"timestamp":"2024-01-15T10:01:00.000Z","message":[2,"h1","Heartbeat",{}]},
+        \\{"timestamp":"2024-01-15T10:05:00.000Z","message":[2,"n1","StatusNotification",{"connectorId":1,"status":"Available"}]}]}
+    );
+    try testing.expect(!has(with_hb, .timeout_no_heartbeat));
+
+    // A trace that ends before the threshold cannot be judged.
+    const too_short = try detect(a,
+        \\{"events":[
+        \\{"timestamp":"2024-01-15T10:00:00.000Z","message":[2,"b1","BootNotification",{"chargePointSerialNumber":"CS-1"}]},
+        \\{"timestamp":"2024-01-15T10:00:00.500Z","message":[3,"b1",{"status":"Accepted","interval":60}]}]}
+    );
+    try testing.expect(!has(too_short, .timeout_no_heartbeat));
+}
+
+test "METER_VALUE_GAP fires on a completed transaction with no MeterValues" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const gap = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]},
+        \\{"message":[3,"s1",{"transactionId":900}]},
+        \\{"message":[2,"e1","StopTransaction",{"transactionId":900,"meterStop":10,"reason":"Local"}]},
+        \\{"message":[3,"e1",{"idTagInfo":{"status":"Accepted"}}]}]}
+    );
+    try testing.expect(has(gap, .meter_value_gap));
+
+    const metered = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]},
+        \\{"message":[3,"s1",{"transactionId":901}]},
+        \\{"message":[2,"mv","MeterValues",{"connectorId":1,"transactionId":901,"meterValue":[]}]},
+        \\{"message":[3,"mv",{}]},
+        \\{"message":[2,"e1","StopTransaction",{"transactionId":901,"meterStop":10,"reason":"Local"}]},
+        \\{"message":[3,"e1",{"idTagInfo":{"status":"Accepted"}}]}]}
+    );
+    try testing.expect(!has(metered, .meter_value_gap));
+}
+
+test "INVALID_STOP_REASON fires on a non-spec reason" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const bad = try detect(a,
+        \\{"events":[{"message":[2,"e1","StopTransaction",{"transactionId":1,"reason":"Teleported"}]}]}
+    );
+    try testing.expect(has(bad, .invalid_stop_reason));
+
+    const ok = try detect(a,
+        \\{"events":[{"message":[2,"e1","StopTransaction",{"transactionId":1,"reason":"EVDisconnected"}]}]}
+    );
+    try testing.expect(!has(ok, .invalid_stop_reason));
+}
+
+test "UNEXPECTED_START fires without a preceding Boot or Authorize" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const unexpected = try detect(a,
+        \\{"events":[{"message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]}]}
+    );
+    try testing.expect(has(unexpected, .unexpected_start));
+
+    const initialized = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"b1","BootNotification",{"chargePointSerialNumber":"CS-1"}]},
+        \\{"message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]}]}
+    );
+    try testing.expect(!has(initialized, .unexpected_start));
+}
+
+test "STATUS_TRANSITION_VIOLATION fires on an illegal transition" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Available → Finishing is not allowed.
+    const illegal = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"n1","StatusNotification",{"connectorId":1,"status":"Available"}]},
+        \\{"message":[2,"n2","StatusNotification",{"connectorId":1,"status":"Finishing"}]}]}
+    );
+    try testing.expect(has(illegal, .status_transition_violation));
+
+    // Available → Preparing is fine.
+    const legal = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"n1","StatusNotification",{"connectorId":1,"status":"Available"}]},
+        \\{"message":[2,"n2","StatusNotification",{"connectorId":1,"status":"Preparing"}]}]}
+    );
+    try testing.expect(!has(legal, .status_transition_violation));
+}
+
+test "DIAGNOSTICS_FAILURE and FIRMWARE_UPDATE_FAILURE fire on failure statuses" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const diag = try detect(a,
+        \\{"events":[{"message":[2,"d1","DiagnosticsStatusNotification",{"status":"UploadFailed"}]}]}
+    );
+    try testing.expect(has(diag, .diagnostics_failure));
+    const diag_ok = try detect(a,
+        \\{"events":[{"message":[2,"d1","DiagnosticsStatusNotification",{"status":"Uploaded"}]}]}
+    );
+    try testing.expect(!has(diag_ok, .diagnostics_failure));
+
+    const fw = try detect(a,
+        \\{"events":[{"message":[2,"f1","FirmwareStatusNotification",{"status":"InstallFailed"}]}]}
+    );
+    try testing.expect(has(fw, .firmware_update_failure));
+    const fw_ok = try detect(a,
+        \\{"events":[{"message":[2,"f1","FirmwareStatusNotification",{"status":"Installed"}]}]}
+    );
+    try testing.expect(!has(fw_ok, .firmware_update_failure));
 }

@@ -62,8 +62,11 @@ in Zig, mirroring the toolkit's `detection.ts`:
   (16-code taxonomy) / `FailureSeverity` model, the `detection.zig` orchestrator
   with per-code severity + remediation metadata, and rules 1–3
   (FAILED_AUTHORIZATION, CONNECTOR_FAULT, STATION_OFFLINE_DURING_SESSION).
-- Next: protocol & transaction rules (#20), timing & anomaly rules (#21), and the
-  conformance harness over the 15 shared scenarios (#22).
+- **Protocol & transaction rules** (#20) — rules 4–10: TIMEOUT_NO_HEARTBEAT,
+  METER_VALUE_GAP, INVALID_STOP_REASON, UNEXPECTED_START,
+  STATUS_TRANSITION_VIOLATION, DIAGNOSTICS_FAILURE, FIRMWARE_UPDATE_FAILURE.
+- Next: timing & anomaly rules (#21) and the conformance harness over the 15
+  shared scenarios (#22).
 
 ## What's next
 
