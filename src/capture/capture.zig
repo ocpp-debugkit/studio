@@ -5,7 +5,9 @@
 //! socket-free at the codec layer; the proxy loop (#56) adds the I/O.
 
 pub const ws = @import("ws.zig");
+pub const decode = @import("decode.zig");
 
 test {
     _ = ws;
+    _ = decode;
 }

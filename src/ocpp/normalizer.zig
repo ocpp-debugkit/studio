@@ -343,7 +343,7 @@ pub fn normalizeEvents(allocator: std.mem.Allocator, inputs: []const TraceEventI
     return events;
 }
 
-fn messageIdOf(message: RawMessage) []const u8 {
+pub fn messageIdOf(message: RawMessage) []const u8 {
     if (message == .array and message.array.items.len >= 2 and message.array.items[1] == .string) {
         return message.array.items[1].string;
     }
