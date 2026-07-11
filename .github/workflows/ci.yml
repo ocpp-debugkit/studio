@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install Native SDK CLI
+        run: npm install -g @native-sdk/cli@0.4.1
+      - name: Doctor (strict, macOS)
+        if: runner.os == 'macOS'
+        run: native doctor --strict
+      - name: Doctor (Linux)
+        if: runner.os == 'Linux'
+        run: native doctor
+      - name: Validate manifest
+        run: native validate app.zon
+      - name: Logic + view tests (headless null platform)
+        run: native test -Dplatform=null
+      - name: Check markup + manifest
+        run: native check --strict
+      - name: Build release binary (macOS)
+        if: runner.os == 'macOS'
+        run: native build
+
+  smoke:
+    name: automation smoke (Linux · Xvfb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install GTK + Xvfb
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev xvfb
+      - name: Install Native SDK CLI
+        run: npm install -g @native-sdk/cli@0.4.1
+      - name: Build headless app (automation enabled)
+        run: native build -Dplatform=linux -Dautomation=true
+      - name: Drive the app headless and assert the widget tree
+        run: ./scripts/smoke.sh
+      - name: Upload rendered screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshot
+          path: .zig-cache/native-sdk-automation/screenshot-main-canvas.png
+          if-no-files-found: ignore
