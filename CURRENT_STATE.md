@@ -8,10 +8,10 @@
 
 ## Active milestone
 
-**S4 — Analysis parity+ (0.3.0): complete.** S0–S4 are done. S4 reached parity
-with the toolkit's analysis surface — report generation (#41), anonymize (#42),
-semantic diff (#43), replay (#44), and a headless CLI in the same binary (#45).
-Next up is **S5 — Live capture** (the flagship; see [ROADMAP.md](ROADMAP.md)).
+**S5 — Live capture (0.4.0): in progress.** S0–S4 are done — analysis parity, a
+headless CLI, and the native inspector. S5 is the flagship: a live WebSocket
+proxy between a charge point and its CSMS. First landing is the hardened
+RFC 6455 transport codec (#54, ADR-0008); see [ROADMAP.md](ROADMAP.md).
 
 ## What's done
 
@@ -176,6 +176,6 @@ live timeline with OS notifications on critical failures.
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports (#41) + anonymize (#42) + diff (#43) + replay core (#44); O(n) detection pending (#36) |
 | `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44) |
-| `capture` (live proxy) | ⬜ not started (S5) |
+| `capture` (live proxy) | 🔨 S5 in progress: RFC 6455 WS transport codec (#54) |
 | `cli` (headless) | ✅ inspect/report/diff/anonymize/ci/scenario (#45) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |

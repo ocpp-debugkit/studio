@@ -118,4 +118,5 @@ test {
     _ = @import("ocpp/ocpp.zig");
     _ = @import("ui/ui.zig");
     _ = @import("cli.zig");
+    _ = @import("capture/capture.zig");
 }
