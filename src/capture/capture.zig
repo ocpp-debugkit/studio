@@ -6,8 +6,10 @@
 
 pub const ws = @import("ws.zig");
 pub const decode = @import("decode.zig");
+pub const proxy = @import("proxy.zig");
 
 test {
     _ = ws;
     _ = decode;
+    _ = proxy;
 }
