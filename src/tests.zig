@@ -308,6 +308,112 @@ test "the failure panel lists failures, expands steps, and jumps to the event" {
     _ = try expectByText(tree.root, .text, "Affected");
 }
 
+fn countNodes(widget: canvas.Widget) usize {
+    var n: usize = 1;
+    for (widget.children) |child| n += countNodes(child);
+    return n;
+}
+
+fn statusText(tree: Ui.Tree) []const u8 {
+    return (findKind(tree.root, .status_bar) orelse return "").text;
+}
+
+test "a message-type facet narrows the timeline and the Clear button restores it" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .open_sample);
+
+    var tree = try buildTree(arena, &model);
+    // The filter bar renders its facet buttons and a search field.
+    _ = try expectByText(tree.root, .button, "Call");
+    try testing.expect(findKind(tree.root, .search_field) != null);
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), "22 events") != null);
+
+    // Filter to Call messages: the status count reflects the match subset.
+    const call = try expectByText(tree.root, .button, "Call");
+    main.update(&model, tree.msgForPointer(call.id, .up).?);
+    tree = try buildTree(arena, &model);
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), " of 22 events") != null);
+
+    // Clear restores the full timeline.
+    const clear = try expectByText(tree.root, .button, "Clear");
+    main.update(&model, tree.msgForPointer(clear.id, .up).?);
+    tree = try buildTree(arena, &model);
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), " of 22") == null);
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), "22 events") != null);
+}
+
+test "typing in the search field filters, and clearing it through the input path restores" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .open_sample);
+
+    var tree = try buildTree(arena, &model);
+    const field = findKind(tree.root, .search_field) orelse return error.WidgetNotFound;
+
+    // Type an action name: only its event(s) remain, and BootNotification stays.
+    main.update(&model, tree.msgForTextEdit(field.id, .{ .insert_text = "BootNotification" }).?);
+    tree = try buildTree(arena, &model);
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), " of 22 events") != null);
+    _ = try expectByText(tree.root, .text, "BootNotification");
+
+    // The search-field clear affordance (x / Escape) arrives as `.clear`.
+    const field2 = findKind(tree.root, .search_field) orelse return error.WidgetNotFound;
+    main.update(&model, tree.msgForTextEdit(field2.id, .clear).?);
+    tree = try buildTree(arena, &model);
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), " of 22") == null);
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), "22 events") != null);
+}
+
+test "a non-matching search shows the empty-result state" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .open_sample);
+    // Drive the query directly through update (same path the field dispatches).
+    workspace.update(&model, .{ .search_input = .{ .insert_text = "zzz-no-such-event" } });
+
+    const tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "No matching events");
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), "0 of 22 events") != null);
+}
+
+test "filtering a large trace keeps the widget tree viewport-sized" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    // 2000 events (Heartbeat call/result pairs) as JSONL — well past a viewport.
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        try buf.appendSlice(testing.allocator, "{\"message\":[2,\"m\",\"Heartbeat\",{}]}\n{\"message\":[3,\"m\",{}]}\n");
+    }
+    model.openBytes("big.jsonl", buf.items);
+    // Filter to Calls (~1000 matches): the window, not the match count, bounds nodes.
+    workspace.update(&model, .{ .toggle_type_filter = .call });
+
+    const tree = try buildTree(arena, &model);
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), "of 2000 events") != null);
+    // No materialization of hidden rows: the whole tree stays viewport-sized.
+    try testing.expect(countNodes(tree.root) < 1024);
+}
+
 test "the virtual window stays viewport-sized at dataset scale" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -390,6 +496,12 @@ test "the inspector view passes the accessibility sweep (empty and loaded)" {
     failing.openBytes("failed-auth.json", @embedFile("ocpp/conformance/fixtures/failed-auth.json"));
     workspace.update(&failing, .{ .select_failure = 0 });
     tree = try buildTree(arena, &failing);
+    try canvas.expectA11yAuditSweepClean(testing.allocator, tree.root, sweep);
+
+    // The filter bar (search field + facets) with an active query.
+    workspace.update(&model, .{ .search_input = .{ .insert_text = "Status" } });
+    workspace.update(&model, .{ .toggle_type_filter = .call });
+    tree = try buildTree(arena, &model);
     try canvas.expectA11yAuditSweepClean(testing.allocator, tree.root, sweep);
 }
 

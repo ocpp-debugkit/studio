@@ -9,6 +9,8 @@
 //! derives display strings into the per-build UI arena (`inspector.zig`).
 
 const std = @import("std");
+const native_sdk = @import("native_sdk");
+const canvas = native_sdk.canvas;
 const ocpp = @import("../ocpp/ocpp.zig");
 const parser = ocpp.parser;
 const timeline = ocpp.timeline;
@@ -32,6 +34,38 @@ pub const max_payload_tree_nodes: usize = 100;
 /// plain value type, so it copies with the trace during tab compaction and
 /// resets to empty when the trace is freed.
 pub const PayloadCollapse = std.StaticBitSet(max_payload_tree_nodes);
+
+/// Max length of the timeline free-text search query.
+pub const max_search_len: usize = 128;
+
+/// Timeline search + filter state. Facets AND-compose; an inactive filter shows
+/// the whole timeline. Lives on the `Model` (never memcpy'd) and stores the
+/// search query as a fixed buffer + length + caret — no stored slice pointer —
+/// so the struct stays trivially copyable and self-reference-free.
+pub const Filter = struct {
+    search_buf: [max_search_len]u8 = undefined,
+    search_len: usize = 0,
+    search_sel: canvas.TextSelection = .{},
+    /// Facets (null = any).
+    direction: ?types.Direction = null,
+    message_type: ?types.MessageType = null,
+    /// Match events that participate in a failure of this severity.
+    severity: ?types.FailureSeverity = null,
+
+    pub fn searchText(self: *const Filter) []const u8 {
+        return self.search_buf[0..self.search_len];
+    }
+
+    pub fn isActive(self: *const Filter) bool {
+        return self.search_len > 0 or self.direction != null or
+            self.message_type != null or self.severity != null;
+    }
+
+    /// A `TextEditState` view over the current query (slice computed fresh).
+    pub fn editState(self: *const Filter) canvas.TextEditState {
+        return .{ .text = self.searchText(), .selection = self.search_sel };
+    }
+};
 
 /// One open trace and everything the engine derived from it. All borrowed slices
 /// (`name`, `parse`, `sessions`, `failures`) live in `arena`; freeing `arena`
@@ -117,6 +151,16 @@ pub const Msg = union(enum) {
     select_failure: usize,
     /// The timeline / detail splitter moved to fraction `payload`.
     timeline_resized: f32,
+    /// A text edit (`insert`, `delete`, `clear`, …) from the search field.
+    search_input: canvas.TextInputEvent,
+    /// Toggle the direction facet to `payload` (or off, if already set to it).
+    toggle_direction_filter: types.Direction,
+    /// Toggle the message-type facet to `payload` (or off).
+    toggle_type_filter: types.MessageType,
+    /// Toggle the severity facet to `payload` (or off).
+    toggle_severity_filter: types.FailureSeverity,
+    /// Reset every facet and the search query.
+    clear_filters,
 };
 
 pub const Model = struct {
@@ -131,6 +175,9 @@ pub const Model = struct {
     /// The timeline / detail splitter fraction (first pane), model-owned so the
     /// `split` reconcile echoes it back through `value` after each drag.
     timeline_split: f32 = 0.62,
+    /// Search + filter applied to the active trace's timeline. Model-owned (not
+    /// per-trace) so the query buffer keeps a stable address.
+    filter: Filter = .{},
 
     // --- derived (never stored) -------------------------------------------
 
@@ -232,6 +279,26 @@ pub const Model = struct {
         }
     }
 
+    /// Apply a search-field text edit to the query buffer. The edit is applied
+    /// into a scratch buffer (no aliasing with the persistent one), then copied
+    /// back and re-pointed. An edit that would overflow the query is dropped.
+    pub fn applySearchInput(self: *Model, ev: canvas.TextInputEvent) void {
+        var scratch: [max_search_len]u8 = undefined;
+        const next = canvas.applyTextInputEvent(self.filter.editState(), ev, &scratch) catch return;
+        const n = @min(next.text.len, self.filter.search_buf.len);
+        @memcpy(self.filter.search_buf[0..n], next.text[0..n]);
+        self.filter.search_len = n;
+        self.filter.search_sel = .{
+            .anchor = @min(next.selection.anchor, n),
+            .focus = @min(next.selection.focus, n),
+        };
+    }
+
+    /// Reset every facet and the search query to the inactive state.
+    pub fn clearFilters(self: *Model) void {
+        self.filter = .{};
+    }
+
     /// Close trace `index`, freeing its arena and compacting the tab list.
     pub fn closeTrace(self: *Model, index: usize) void {
         if (index >= self.trace_count) return;
@@ -278,6 +345,11 @@ pub fn update(model: *Model, msg: Msg) void {
         .select_session => |i| model.selectSession(i),
         .select_failure => |i| model.selectFailure(i),
         .timeline_resized => |f| model.timeline_split = f,
+        .search_input => |ev| model.applySearchInput(ev),
+        .toggle_direction_filter => |d| model.filter.direction = if (model.filter.direction == d) null else d,
+        .toggle_type_filter => |t| model.filter.message_type = if (model.filter.message_type == t) null else t,
+        .toggle_severity_filter => |s| model.filter.severity = if (model.filter.severity == s) null else s,
+        .clear_filters => model.clearFilters(),
     }
 }
 
@@ -521,6 +593,45 @@ test "selecting a failure expands it and jumps to its primary event" {
     // Out-of-range failure index is ignored.
     update(&model, .{ .select_failure = 999 });
     try testing.expectEqual(@as(?usize, sel), model.activeTrace().?.selected_event);
+}
+
+test "search input builds and clears the query through edit events" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .open_sample);
+    try testing.expect(!model.filter.isActive());
+
+    update(&model, .{ .search_input = .{ .insert_text = "Boot" } });
+    try testing.expectEqualStrings("Boot", model.filter.searchText());
+    try testing.expect(model.filter.isActive());
+
+    update(&model, .{ .search_input = .delete_backward });
+    try testing.expectEqualStrings("Boo", model.filter.searchText());
+
+    // The search field's clear affordance (x / Escape) arrives as `.clear`.
+    update(&model, .{ .search_input = .clear });
+    try testing.expectEqualStrings("", model.filter.searchText());
+    try testing.expect(!model.filter.isActive());
+}
+
+test "facet filters toggle on and off and clear together" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .open_sample);
+
+    update(&model, .{ .toggle_type_filter = .call });
+    try testing.expectEqual(@as(?types.MessageType, .call), model.filter.message_type);
+    update(&model, .{ .toggle_type_filter = .call }); // same value toggles it off
+    try testing.expectEqual(@as(?types.MessageType, null), model.filter.message_type);
+
+    update(&model, .{ .toggle_direction_filter = .cs_to_csms });
+    update(&model, .{ .toggle_severity_filter = .critical });
+    try testing.expect(model.filter.isActive());
+
+    update(&model, .clear_filters);
+    try testing.expect(!model.filter.isActive());
+    try testing.expectEqual(@as(?types.Direction, null), model.filter.direction);
+    try testing.expectEqual(@as(?types.FailureSeverity, null), model.filter.severity);
 }
 
 test "the splitter fraction is model-owned and echoed by update" {
