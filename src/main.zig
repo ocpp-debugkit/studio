@@ -1,19 +1,28 @@
-//! A minimal native-rendered Native SDK app: the view lives in
-//! `app.native` (embedded into the binary, and watched for hot reload in
-//! dev); this file is the logic: `Model`, `Msg`, and `update`.
+//! OCPP DebugKit Studio — app wiring. The inspector view is a Zig `canvas.Ui`
+//! builder view (ADR-0006: the event timeline needs the builder-only windowed
+//! virtual list), so this file hands `UiApp` a `.view` function rather than
+//! embedded `.native` markup. State and transitions live in `ui/workspace.zig`;
+//! the view in `ui/inspector.zig`.
+//!
+//! Traces are opened from command-line path arguments — read here in `main`
+//! through `init.io` (unbounded, the large-trace path #29 builds on), parsed by
+//! the engine, and seeded into the workspace before the loop starts.
 
 const std = @import("std");
 const runner = @import("runner");
 const native_sdk = @import("native_sdk");
+const workspace = @import("ui/workspace.zig");
+const inspector = @import("ui/inspector.zig");
 
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
-const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 
 const canvas_label = "main-canvas";
-const window_width: f32 = 480;
-const window_height: f32 = 320;
+const window_width: f32 = 1200;
+const window_height: f32 = 800;
+const window_min_width: f32 = 900;
+const window_min_height: f32 = 560;
 
 const app_permissions = [_][]const u8{ native_sdk.security.permission_command, native_sdk.security.permission_view };
 const shell_views = [_]native_sdk.ShellView{
@@ -24,58 +33,45 @@ const shell_windows = [_]native_sdk.ShellWindow{.{
     .title = "OCPP DebugKit Studio",
     .width = window_width,
     .height = window_height,
+    .min_width = window_min_width,
+    .min_height = window_min_height,
     .restore_state = false,
     .views = &shell_views,
 }};
 const shell_scene: native_sdk.ShellConfig = .{ .windows = &shell_windows };
 
-// ------------------------------------------------------------------ model
+// ------------------------------------------------------------------ TEA types
 
-pub const Msg = union(enum) {
-    increment,
-    decrement,
-    reset,
-};
-
-pub const Model = struct {
-    count: i64 = 0,
-};
-
-pub fn update(model: *Model, msg: Msg) void {
-    switch (msg) {
-        .increment => model.count += 1,
-        .decrement => model.count -= 1,
-        .reset => model.count = 0,
-    }
-}
-
-// ------------------------------------------------------------------- view
-
-pub const AppUi = canvas.Ui(Msg);
-pub const app_markup = @embedFile("app.native");
+pub const Model = workspace.Model;
+pub const Msg = workspace.Msg;
+pub const update = workspace.update;
+pub const view = inspector.view;
+pub const AppUi = inspector.Ui;
 
 // -------------------------------------------------------------------- app
 
-const CounterApp = native_sdk.UiApp(Model, Msg);
+const InspectorApp = native_sdk.UiApp(Model, Msg);
 
-pub fn initialModel() Model {
-    return .{};
-}
+/// Largest trace file `main` will read from disk. Generous so the trusted
+/// command-line path isn't the bottleneck; the engine parser still enforces its
+/// own ingestion policy on the bytes (raised for trusted files in #29).
+const max_trace_file_bytes: usize = 256 * 1024 * 1024;
 
 pub fn main(init: std.process.Init) !void {
-    // The app struct (and any real Model) is multi-MB: `create`
-    // heap-allocates and constructs everything in place, so neither
-    // ever rides the stack. Mutate `app_state.model` through the
-    // pointer before running if boot state is not the default.
-    const app_state = try CounterApp.create(std.heap.page_allocator, .{
+    // The app struct (and the Model) are multi-MB: `create` heap-allocates and
+    // constructs in place so neither rides the stack.
+    const app_state = try InspectorApp.create(std.heap.page_allocator, .{
         .name = "studio",
         .scene = shell_scene,
         .canvas_label = canvas_label,
         .update = update,
-        .markup = .{ .source = app_markup, .watch_path = "src/app.native", .io = init.io },
+        .view = view,
     });
     defer app_state.destroy();
-    app_state.model = initialModel();
+    app_state.model = .{ .backing = std.heap.page_allocator };
+    defer app_state.model.deinitAll();
+
+    openTracesFromArgs(&app_state.model, init);
 
     try runner.runWithOptions(app_state.app(), .{
         .app_name = "studio",
@@ -92,7 +88,27 @@ pub fn main(init: std.process.Init) !void {
     }, init);
 }
 
+/// Read every trace path passed on the command line into the workspace. A file
+/// that cannot be read opens as an error trace rather than aborting startup, so
+/// one bad path never sinks the others.
+fn openTracesFromArgs(model: *Model, init: std.process.Init) void {
+    const alloc = std.heap.page_allocator;
+    const args = init.minimal.args.toSlice(alloc) catch return;
+    defer alloc.free(args);
+    if (args.len <= 1) return;
+    for (args[1..]) |path| {
+        const name = std.fs.path.basename(path);
+        const bytes = std.Io.Dir.cwd().readFileAlloc(init.io, path, alloc, .limited(max_trace_file_bytes)) catch |err| {
+            model.openLoadError(name, @errorName(err));
+            continue;
+        };
+        defer alloc.free(bytes);
+        model.openBytes(name, bytes);
+    }
+}
+
 test {
     _ = @import("tests.zig");
     _ = @import("ocpp/ocpp.zig");
+    _ = @import("ui/ui.zig");
 }

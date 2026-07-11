@@ -7,10 +7,13 @@ be productive without rediscovering them.
 ## Project overview
 
 OCPP DebugKit Studio is a native desktop debugger for OCPP charging sessions,
-built in Zig on the Native SDK (native-rendered `.native` markup + a Zig
-`Model` / `Msg` / `update` loop — no WebView, no web frontend). It is a fully
-independent sibling of the TypeScript `@ocpp-debugkit/toolkit`; the two share a
-specification contract, not code (see `docs/adr/0001-independent-implementation.md`).
+built in Zig on the Native SDK (native-rendered UI + a Zig `Model` / `Msg` /
+`update` loop — no WebView, no web frontend). The inspector view is a hand-written
+`canvas.Ui` builder view rather than `.native` markup, because the event timeline
+needs the builder-only windowed virtual list (see
+`docs/adr/0006-inspector-builder-view.md`). It is a fully independent sibling of
+the TypeScript `@ocpp-debugkit/toolkit`; the two share a specification contract,
+not code (see `docs/adr/0001-independent-implementation.md`).
 
 ## Repository layout
 
@@ -18,19 +21,23 @@ specification contract, not code (see `docs/adr/0001-independent-implementation.
 studio/
 ├── app.zon                  # app manifest: identity, window, view, security policy
 ├── src/
-│   ├── main.zig             # Model, Msg, update, app wiring
-│   ├── app.native           # the view (declarative markup)
+│   ├── main.zig             # app wiring + CLI-arg trace loading (re-exports the TEA types)
+│   ├── ui/                  # the inspector: builder view + workspace state
+│   │   ├── workspace.zig    #   Model, Msg, update — the bounded multi-trace workspace
+│   │   ├── inspector.zig    #   the canvas.Ui builder view (ADR-0006)
+│   │   └── ui.zig           #   aggregate root (test discovery)
 │   ├── ocpp/                # pure, headless OCPP engine (types, parser, detection, …)
 │   │   └── conformance/     # vendored shared-contract fixtures + goldens + harness
-│   └── tests.zig            # headless view/model tests
+│   └── tests.zig            # headless view/model integration tests
 ├── scripts/smoke.sh         # portable automation smoke test (Xvfb in CI)
 ├── docs/adr/                # architecture decision records
 └── .github/workflows/ci.yml # CI: verify (macOS+Linux) + Linux Xvfb smoke
 ```
 
-As the engine lands, source grows under `src/ocpp/` (the pure, headless-testable
-engine), `src/ui/` (views), `src/capture/` (live proxy), and `src/cli.zig`
-(headless mode). Keep the engine free of UI and platform dependencies.
+Source grows under `src/ocpp/` (the pure, headless-testable engine), `src/ui/`
+(the inspector view + state), and later `src/capture/` (live proxy) and
+`src/cli.zig` (headless mode). Keep the engine free of UI and platform
+dependencies — `src/ui/` consumes it through the workspace Model.
 
 ## Build commands
 
@@ -41,7 +48,7 @@ native dev                    # build Debug + run, with markup hot reload
 native test                   # run the test suite
 native test -Dplatform=null   # headless tests (what CI runs)
 native build                  # ReleaseFast binary → zig-out/bin/studio
-native check --strict         # validate src/*.native + app.zon
+native check --strict         # validate app.zon (and any .native views)
 native doctor --strict        # toolchain / environment health
 ```
 
@@ -51,8 +58,9 @@ Prerequisites: Zig `0.16.0` and `@native-sdk/cli` (`npm install -g @native-sdk/c
 
 - **Engine is pure Zig, UI-free.** Everything under `src/ocpp/` must be testable
   headlessly with `native test`. The UI consumes it through the Model.
-- **TEA discipline.** `.native` views are declarative; all side effects (spawn,
-  fetch, clipboard, sockets) go through the update-side effects channel.
+- **TEA discipline.** The view is a pure function of the model (`ui/inspector.zig`
+  builds the tree; it never mutates state); all side effects (spawn, fetch,
+  clipboard, sockets) go through the update-side effects channel.
 - **Version-tagged protocol boundary.** The decoder keys off an OCPP version tag
   so 2.0.1 can be added later without reworking 1.6J.
 - **Conformance over duplication.** Studio mirrors the toolkit's *behavior* via a

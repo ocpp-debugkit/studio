@@ -8,8 +8,8 @@
 
 ## Active milestone
 
-**S2 — Detection + conformance (0.1.0): complete.** Next up: **S3 — Inspector UI**
-(see [ROADMAP.md](ROADMAP.md)).
+**S3 — Inspector UI (0.2.0): in progress.** The engine (S0–S2) is complete; the
+native inspector is now being built (see [ROADMAP.md](ROADMAP.md)).
 
 ## What's done
 
@@ -72,13 +72,23 @@ toolkit's:
 
 ## What's in progress
 
-- Nothing in flight — S2 is closed; S3 is next.
+**S3 — Inspector UI (0.2.0).** The inspector shell has landed (#27): the
+placeholder counter is replaced by a Zig `canvas.Ui` builder view (ADR-0006), a
+bounded multi-trace workspace `Model` / `Msg` / `update` (`src/ui/`), and trace
+loading from command-line path arguments (read unbounded in `main` via
+`init.io`) plus a built-in embedded sample. The window opens on an empty state or
+the loaded trace's overview.
+
+Still ahead in S3: the virtualized event timeline (#28), the trusted-ingestion
+capacity path for 500k-event / 100 MB traces (#29), the message inspector +
+session panel (#30), the failure panel (#31), and search / filter (#32).
+Interactive open (native dialog + drag-drop) is deferred to #33 — it needs an
+ejected runner (see ADR-0006).
 
 ## What's next
 
-**S3 — Inspector UI (0.2.0):** the native inspector — open / drag-drop traces, a
-virtualized event timeline, the per-message inspector, the failure panel, and
-search / filter, handling traces far larger than a browser tab can hold.
+After S3: **S4 — Analysis parity+ (0.3.0)** — reports, anonymize, diff,
+wall-clock replay, and a headless CLI mode.
 
 ## Known blockers / decisions pending
 
@@ -91,7 +101,7 @@ search / filter, handling traces far larger than a browser tab can hold.
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ done for S2 |
-| `ui` (native views) | ⬜ placeholder (S3) |
+| `ui` (native views) | 🚧 shell landed (S3, #27); timeline + panes next |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |
