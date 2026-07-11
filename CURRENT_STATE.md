@@ -10,9 +10,9 @@
 
 **S4 — Analysis parity+ (0.3.0): in progress.** S0–S3 are complete (the engine
 and the native inspector). S4 reaches parity with the toolkit's analysis surface;
-the first slices — Markdown / HTML report generation (#41) and anonymize-on-export
-(#42) — have landed. Diff (#43), wall-clock replay (#44), and the headless CLI
-(#45) remain (see [ROADMAP.md](ROADMAP.md)).
+report generation (#41), anonymize-on-export (#42), and semantic trace diff (#43)
+have landed. Wall-clock replay (#44) and the headless CLI (#45) remain (see
+[ROADMAP.md](ROADMAP.md)).
 
 ## What's done
 
@@ -137,12 +137,18 @@ In progress. Landed so far:
   regex), emitting pretty JSON. It mirrors the toolkit's code — including its two
   documented quirks (meter values are not transformed; `transactionId` resequences
   per occurrence) — flagged in-code rather than silently diverging.
+- **Semantic trace diff (#43)** — `src/ocpp/diff.zig` compares two parsed traces
+  (mirroring the toolkit's `diffTraces`): events matched by OCPP UniqueId, with
+  field-level diffs (timestamp / direction / action / payload-deep-equal /
+  errorCode), added/removed events, a failure-set delta by code, and a
+  first-session summary comparison. Includes a recursive JSON deep-equality check
+  and a compact-JSON renderer for the changed values.
 
 ## What's next
 
-Remaining **S4 — Analysis parity+ (0.3.0)** issues: semantic trace diff (#43),
-replay + wall-clock playback (#44), and the headless CLI subcommands (#45). Then
-**S5 — Live capture** (the flagship).
+Remaining **S4 — Analysis parity+ (0.3.0)** issues: replay + wall-clock playback
+(#44) and the headless CLI subcommands (#45). Then **S5 — Live capture** (the
+flagship).
 
 ## Known blockers / decisions pending
 
@@ -154,7 +160,7 @@ replay + wall-clock playback (#44), and the headless CLI subcommands (#45). Then
 | --- | --- |
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
-| `ocpp` (engine) | ✅ S2 + trusted ingestion (#29) + reports/summarizer (#41) + anonymize (#42); O(n) detection pending (#36) |
+| `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports/summarizer (#41) + anonymize (#42) + diff (#43); O(n) detection pending (#36) |
 | `ui` (native views) | ✅ S3 inspector — timeline, message inspector, session + failure panels, search & filter (#27–#32) |
 | `capture` (live proxy) | ⬜ not started (S5) |
 | `cli` (headless) | ⬜ not started (S4) |
