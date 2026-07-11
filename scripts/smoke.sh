@@ -55,6 +55,7 @@ native automate wait --timeout-ms 60000
 native automate assert --timeout-ms 30000 \
   'ready=true' \
   'normal-session.json' \
+  'BootNotification' \
   '22 events' \
   'OCPP DebugKit Studio'
 

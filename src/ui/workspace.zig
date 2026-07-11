@@ -79,6 +79,10 @@ pub const Msg = union(enum) {
     select_trace: usize,
     /// Close trace `payload`, freeing its arena.
     close_trace: usize,
+    /// Select event `payload` (a timeline row) in the active trace.
+    select_event: usize,
+    /// The timeline / detail splitter moved to fraction `payload`.
+    timeline_resized: f32,
 };
 
 pub const Model = struct {
@@ -90,6 +94,9 @@ pub const Model = struct {
     trace_count: usize = 0,
     /// Index of the active trace within `traces[0..trace_count]`.
     active: usize = 0,
+    /// The timeline / detail splitter fraction (first pane), model-owned so the
+    /// `split` reconcile echoes it back through `value` after each drag.
+    timeline_split: f32 = 0.62,
 
     // --- derived (never stored) -------------------------------------------
 
@@ -129,6 +136,14 @@ pub const Model = struct {
 
     pub fn selectTrace(self: *Model, index: usize) void {
         if (index < self.trace_count) self.active = index;
+    }
+
+    /// Select a timeline row (event index) in the active trace. Out-of-range
+    /// indices are ignored.
+    pub fn selectEvent(self: *Model, index: usize) void {
+        if (self.trace_count == 0) return;
+        const t = &self.traces[self.active];
+        if (index < t.events.len) t.selected_event = index;
     }
 
     /// Close trace `index`, freeing its arena and compacting the tab list.
@@ -172,6 +187,8 @@ pub fn update(model: *Model, msg: Msg) void {
         .open_sample => model.openBytes(sample_name, sample_bytes),
         .select_trace => |i| model.selectTrace(i),
         .close_trace => |i| model.closeTrace(i),
+        .select_event => |i| model.selectEvent(i),
+        .timeline_resized => |f| model.timeline_split = f,
     }
 }
 
@@ -303,6 +320,28 @@ test "a malformed trace opens in its error state without crashing" {
     try testing.expect(t.isError());
     try testing.expectEqualStrings("broken.json", t.name);
     try testing.expectEqual(@as(usize, 0), t.eventCount());
+}
+
+test "selecting an event records it on the active trace, bounds-checked" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .open_sample);
+
+    try testing.expectEqual(@as(?usize, null), model.activeTrace().?.selected_event);
+    update(&model, .{ .select_event = 5 });
+    try testing.expectEqual(@as(?usize, 5), model.activeTrace().?.selected_event);
+
+    // Out of range is ignored (the sample has 22 events).
+    update(&model, .{ .select_event = 9999 });
+    try testing.expectEqual(@as(?usize, 5), model.activeTrace().?.selected_event);
+}
+
+test "the splitter fraction is model-owned and echoed by update" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    try testing.expectApproxEqAbs(@as(f32, 0.62), model.timeline_split, 0.0001);
+    update(&model, .{ .timeline_resized = 0.4 });
+    try testing.expectApproxEqAbs(@as(f32, 0.4), model.timeline_split, 0.0001);
 }
 
 test "the workspace is bounded at max_open_traces" {

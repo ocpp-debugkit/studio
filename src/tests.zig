@@ -44,6 +44,16 @@ fn findKind(widget: canvas.Widget, kind: canvas.WidgetKind) ?canvas.Widget {
     return null;
 }
 
+/// The first `row` widget whose subtree contains `text` — used to grab a
+/// pressable timeline row by the message it shows.
+fn findRowWithText(widget: canvas.Widget, text: []const u8) ?canvas.Widget {
+    if (widget.kind == .row and findByText(widget, .text, text) != null) return widget;
+    for (widget.children) |child| {
+        if (findRowWithText(child, text)) |found| return found;
+    }
+    return null;
+}
+
 test "the empty workspace offers the open-sample affordance" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -56,7 +66,7 @@ test "the empty workspace offers the open-sample affordance" {
     _ = try expectByText(tree.root, .button, "Open sample");
 }
 
-test "clicking Open sample loads the sample and the overview reflects it" {
+test "clicking Open sample loads the sample and the timeline renders it" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -70,12 +80,56 @@ test "clicking Open sample loads the sample and the overview reflects it" {
     main.update(&model, tree.msgForPointer(open.id, .up).?);
     try testing.expect(model.hasTraces());
 
-    // Rebuild: the overview shows the event count and the status bar summarizes.
+    // Rebuild: the timeline renders event rows (the first is a BootNotification
+    // Call) and the status bar summarizes the trace.
     tree = try buildTree(arena, &model);
-    _ = try expectByText(tree.root, .text, "22"); // events stat tile value
-    _ = try expectByText(tree.root, .text, "events");
+    _ = try expectByText(tree.root, .text, "BootNotification");
     const status = findKind(tree.root, .status_bar) orelse return error.WidgetNotFound;
     try testing.expect(std.mem.indexOf(u8, status.text, "22 events") != null);
+}
+
+test "clicking a timeline row selects the event and the detail pane reflects it" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .open_sample);
+
+    var tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "Select an event to inspect it");
+
+    // Press the BootNotification row (event 0); selection follows through the
+    // pressable row's on_press.
+    const row = findRowWithText(tree.root, "BootNotification") orelse return error.WidgetNotFound;
+    main.update(&model, tree.msgForPointer(row.id, .up).?);
+    try testing.expectEqual(@as(?usize, 0), model.activeTrace().?.selected_event);
+
+    // Rebuild: the detail pane shows the selected event's fields.
+    tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "evt-0001"); // the event id
+    _ = try expectByText(tree.root, .text, "Message ID"); // a detail-row label
+}
+
+test "the virtual window stays viewport-sized at dataset scale" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+
+    // Half a million events, but the window derives from the viewport, not the
+    // count: the timeline materializes only a few dozen row nodes — far under
+    // the 1024-node per-view budget. This is the capacity claim in miniature
+    // (the engine side lands in #29).
+    var ui = Ui.init(arena_state.allocator());
+    const window = ui.virtualWindow(.{
+        .id = "event-timeline",
+        .item_count = 500_000,
+        .item_extent = 44,
+        .overscan = 6,
+        .viewport_fallback = 640,
+    });
+    try testing.expect(window.itemCount() > 0);
+    try testing.expect(window.itemCount() < 64);
 }
 
 test "a second trace produces a tab strip that switches the active trace" {
