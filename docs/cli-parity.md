@@ -28,7 +28,8 @@ intentional difference.
 - **`ci` runs the embedded contract**, not a user directory. Studio vendors the
   15 `contract-v1` fixtures + goldens under `src/ocpp/conformance/` (ADR-0004),
   so `ci` is a self-contained conformance gate — the same logic the
-  `native test` conformance harness runs.
+  `native test` conformance harness runs. See [the conformance
+  contract](CONTRACT.md).
 - **One binary, two faces.** The CLI shares the exact pure engine the GUI uses
   (`src/ocpp/`); there is no separate code path to drift. A bare trace path opens
   the GUI: `studio path/to/trace.json`.

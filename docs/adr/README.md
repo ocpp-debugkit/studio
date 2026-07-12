@@ -21,3 +21,4 @@ supersedes the old one rather than editing history.
 | [0009](0009-live-capture-effects-channel.md) | Live-capture effects channel (`update_fx` + `fx.spawn`) | Accepted |
 | [0010](0010-live-proxy-transport-concurrency.md) | Live-proxy transport & concurrency | Accepted |
 | [0011](0011-live-notification-services.md) | Live-capture notifications via the effects-bound platform services | Accepted |
+| [0012](0012-freeze-contract-v1.md) | Freeze `contract-v1` for the 0.5.0 release | Accepted |
