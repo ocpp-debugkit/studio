@@ -18,3 +18,4 @@ supersedes the old one rather than editing history.
 | [0006](0006-inspector-builder-view.md) | Inspector as a Zig builder view (not `.native` markup) | Accepted |
 | [0007](0007-trusted-ingestion.md) | Trusted-ingestion limits for user-opened traces | Accepted |
 | [0008](0008-websocket-transport.md) | WebSocket transport: a hand-rolled RFC 6455 subset | Accepted |
+| [0010](0010-live-proxy-transport-concurrency.md) | Live-proxy transport & concurrency | Accepted |
