@@ -8,6 +8,8 @@ reference are all pre-1.0, minor (0.x) releases may include breaking changes.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-07-12
+
 ### Changed
 
 - **macOS** — the packaged app bundle is now named `OCPP DebugKit Studio.app`
@@ -60,5 +62,6 @@ S0–S5. Highlights:
 - TLS (`wss://`) live capture, a menu-bar monitor, and interactive open
   (dialog / drag-drop) are planned for later releases.
 
-[Unreleased]: https://github.com/ocpp-debugkit/studio/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ocpp-debugkit/studio/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/ocpp-debugkit/studio/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ocpp-debugkit/studio/releases/tag/v0.5.0

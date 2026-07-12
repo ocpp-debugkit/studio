@@ -4,7 +4,8 @@
 
 ## Current version
 
-`0.5.0` — first public release.
+`0.5.1` — macOS packaging patch (app bundle named `OCPP DebugKit Studio.app`,
+Gatekeeper install docs); the first public release was `0.5.0`.
 
 ## Active milestone
 
