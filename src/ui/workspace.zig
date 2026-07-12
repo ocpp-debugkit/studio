@@ -60,6 +60,28 @@ pub const default_upstream = "ws://127.0.0.1:8080/ocpp";
 /// is active (`Model.mutTrace`).
 pub const Surface = enum { traces, live };
 
+/// Max OS notifications queued at once — bounded by the distinct critical
+/// failure codes, since dedup emits at most one per code per session.
+pub const max_pending_notifications: usize = 8;
+
+/// A queued OS notification for a critical live failure. Title/body are copied
+/// into fixed buffers so a queued notification never dangles into the live
+/// trace's arena (rebuilt on every reload). `update_fx` drains and fires these
+/// through the platform notification service (ADR-0011).
+pub const Notification = struct {
+    title_buf: [96]u8 = undefined,
+    title_len: usize = 0,
+    body_buf: [256]u8 = undefined,
+    body_len: usize = 0,
+
+    pub fn title(self: *const Notification) []const u8 {
+        return self.title_buf[0..self.title_len];
+    }
+    pub fn body(self: *const Notification) []const u8 {
+        return self.body_buf[0..self.body_len];
+    }
+};
+
 /// Timeline search + filter state. Facets AND-compose; an inactive filter shows
 /// the whole timeline. Lives on the `Model` (never memcpy'd) and stores the
 /// search query as a fixed buffer + length + caret — no stored slice pointer —
@@ -234,6 +256,12 @@ pub const LiveCapture = struct {
     trace: LoadedTrace = .{},
     exit_code: i32 = 0,
     exit_reason: ?native_sdk.EffectExitReason = null,
+    /// Critical failure codes already notified this session — dedup, so one
+    /// condition raises at most one OS notification per capture.
+    notified: std.EnumSet(types.FailureCode) = std.EnumSet(types.FailureCode).initEmpty(),
+    /// Notifications queued for `update_fx` to fire (drained each turn).
+    pending_buf: [max_pending_notifications]Notification = undefined,
+    pending_len: usize = 0,
 
     pub fn listen(self: *const LiveCapture) []const u8 {
         return self.listen_buf[0..self.listen_len];
@@ -454,6 +482,8 @@ pub const Model = struct {
         self.live.key +%= 1;
         if (self.live.key == 0) self.live.key = 1;
         self.live.exit_reason = null;
+        self.live.notified = std.EnumSet(types.FailureCode).initEmpty();
+        self.live.pending_len = 0;
         self.live.status = .capturing;
     }
 
@@ -471,6 +501,62 @@ pub const Model = struct {
         self.live.ndjson.append(self.backing, '\n') catch return;
         self.trimLiveBuffer();
         self.reloadLiveTrace();
+        self.queueCriticalNotifications();
+    }
+
+    /// Scan the freshly reloaded live trace for `critical` failures whose code
+    /// has not yet notified this session, and enqueue one notification per new
+    /// code (deduped via `notified`, bounded by the queue). `update_fx` fires
+    /// them; see ADR-0011.
+    fn queueCriticalNotifications(self: *Model) void {
+        for (self.live.trace.failures) |f| {
+            if (f.severity != .critical) continue;
+            if (!isLiveNotifiable(f.code)) continue;
+            if (self.live.notified.contains(f.code)) continue;
+            self.live.notified.insert(f.code);
+            self.enqueueNotification(f);
+        }
+    }
+
+    fn enqueueNotification(self: *Model, f: types.Failure) void {
+        if (self.live.pending_len >= max_pending_notifications) return;
+        var n = Notification{};
+        const title = std.fmt.bufPrint(&n.title_buf, "Critical: {s}", .{f.code.toWire()}) catch n.title_buf[0..0];
+        n.title_len = title.len;
+        const bcap = @min(f.description.len, n.body_buf.len);
+        @memcpy(n.body_buf[0..bcap], f.description[0..bcap]);
+        n.body_len = bcap;
+        self.live.pending_buf[self.live.pending_len] = n;
+        self.live.pending_len += 1;
+    }
+
+    /// Which critical failures warrant a live OS notification: those signalling
+    /// an EXPLICIT fault the station reported — a "Faulted" connector
+    /// (`connector_fault`), a failed diagnostics upload (`diagnostics_failure`).
+    /// Absence-based criticals are deliberately excluded: a live stream is a
+    /// growing prefix, so an in-flight Call (`unresponsive_csms`) and an
+    /// as-yet-unclosed transaction (`station_offline_during_session`) are the
+    /// normal mid-session state and would ping on nearly every session before
+    /// resolving. They still appear in the live failure panel — they just don't
+    /// raise an OS notification. See ADR-0011.
+    fn isLiveNotifiable(code: types.FailureCode) bool {
+        return switch (code) {
+            .connector_fault, .diagnostics_failure => true,
+            else => false,
+        };
+    }
+
+    /// The notifications queued since the last clear (read-only). `update_fx`
+    /// fires these and then calls `clearNotifications`. Split read/clear rather
+    /// than one draining call so the accessor stays `*const Model` — the runtime
+    /// reflects value-returning model accessors and requires them const.
+    pub fn pendingNotifications(self: *const Model) []const Notification {
+        return self.live.pending_buf[0..self.live.pending_len];
+    }
+
+    /// Clear the notification queue (after `update_fx` has fired the pending set).
+    pub fn clearNotifications(self: *Model) void {
+        self.live.pending_len = 0;
     }
 
     /// The capture worker exited: its reason decides the terminal status.
@@ -1017,4 +1103,88 @@ test "endpoint fields edit through the input path and freeze while capturing" {
     update(&model, .{ .upstream_input = .clear });
     try testing.expectEqualStrings("0.0.0.0:7000", model.live.listen());
     try testing.expectEqualStrings(default_upstream, model.live.upstream());
+}
+
+// --- live notifications (#60) ----------------------------------------------
+
+/// A StartTransaction opening a session, then a "Faulted" StatusNotification
+/// during it — the minimal stream that raises CONNECTOR_FAULT (critical).
+const fault_start = "{\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m1\",\"StartTransaction\",{\"connectorId\":1,\"idTag\":\"T\",\"meterStart\":0,\"timestamp\":\"2024-01-01T00:00:00Z\"}]}";
+const fault_status = "{\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m2\",\"StatusNotification\",{\"connectorId\":1,\"status\":\"Faulted\",\"errorCode\":\"OtherError\"}]}";
+
+fn streamCapture(model: *Model, line: []const u8) void {
+    update(model, .{ .capture_line = .{ .key = model.live.key, .line = line } });
+}
+
+test "a critical live failure queues one notification, deduplicated per code" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .start_capture);
+
+    // The StartTransaction alone raises only absence-based criticals (an open
+    // transaction, an unanswered Call) — not notifiable, so nothing is queued.
+    streamCapture(&model, fault_start);
+    try testing.expectEqual(@as(usize, 0), model.live.pending_len);
+
+    // The Faulted StatusNotification raises CONNECTOR_FAULT (critical) → one
+    // notification, titled with the code and carrying the description.
+    streamCapture(&model, fault_status);
+    const pending = model.pendingNotifications();
+    try testing.expectEqual(@as(usize, 1), pending.len);
+    try testing.expect(std.mem.indexOf(u8, pending[0].title(), "CONNECTOR_FAULT") != null);
+    try testing.expect(pending[0].body().len > 0);
+
+    // Clearing empties the queue (what `update_fx` does after firing).
+    model.clearNotifications();
+    try testing.expectEqual(@as(usize, 0), model.pendingNotifications().len);
+
+    // A further line still re-detects the same fault, but it does not re-notify.
+    streamCapture(&model, "{\"direction\":\"CSMS_TO_CS\",\"message\":[3,\"m2\",{}]}");
+    try testing.expect(model.live.trace.failures.len > 0);
+    try testing.expectEqual(@as(usize, 0), model.pendingNotifications().len);
+}
+
+test "non-critical live failures do not notify" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .start_capture);
+
+    // FAILED_AUTHORIZATION is a warning, not critical.
+    streamCapture(&model, "{\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m1\",\"Authorize\",{\"idTag\":\"BAD\"}]}");
+    streamCapture(&model, "{\"direction\":\"CSMS_TO_CS\",\"message\":[3,\"m1\",{\"idTagInfo\":{\"status\":\"Invalid\"}}]}");
+    try testing.expect(model.live.trace.failures.len > 0); // a (warning) failure was detected
+    try testing.expectEqual(@as(usize, 0), model.pendingNotifications().len); // but none notified
+}
+
+test "prefix-transient criticals do not notify, though they show as failures" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    update(&model, .start_capture);
+
+    // An open transaction (StartTransaction, no StopTransaction) trips
+    // STATION_OFFLINE_DURING_SESSION, and the unanswered StartTransaction Call
+    // trips UNRESPONSIVE_CSMS — both critical, both inferred from a not-yet-
+    // arrived message, so both are the normal mid-session state of a live stream.
+    streamCapture(&model, fault_start);
+    try testing.expect(model.live.trace.failuresOf(.critical) > 0); // detected…
+    try testing.expectEqual(@as(usize, 0), model.pendingNotifications().len); // …but not notified
+}
+
+test "starting a new capture resets the notification dedup" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    update(&model, .start_capture);
+    streamCapture(&model, fault_start);
+    streamCapture(&model, fault_status);
+    try testing.expectEqual(@as(usize, 1), model.pendingNotifications().len);
+
+    // Stop, then a fresh capture clears the dedup set — the same fault notifies
+    // again in the new session.
+    update(&model, .stop_capture);
+    update(&model, .start_capture);
+    try testing.expectEqual(@as(usize, 0), model.live.pending_len);
+    streamCapture(&model, fault_start);
+    streamCapture(&model, fault_status);
+    try testing.expectEqual(@as(usize, 1), model.pendingNotifications().len);
 }

@@ -8,14 +8,15 @@
 
 ## Active milestone
 
-**S5 — Live capture (0.4.0): in progress.** S0–S4 are done — analysis parity, a
-headless CLI, and the native inspector. S5's flagship — a live WebSocket MITM
-proxy between a charge point and its CSMS — works end to end from the terminal
-(WS codec #54, decode #55, proxy #56, the `studio capture` CLI #57) and now in
-the GUI: a live-capture surface (#59) streams the proxy's events into the
-inspector through the effects channel (#58, ADR-0009) — `update_fx` + `fx.spawn`,
-**in-runner**, not a runner-eject. Only OS notifications on critical live
-failures (#60) remain; see [ROADMAP.md](ROADMAP.md).
+**S5 — Live capture (0.4.0): complete.** S0–S5 are done. S5's flagship — a live
+WebSocket MITM proxy between a charge point and its CSMS — works end to end from
+the terminal (WS codec #54, decode #55, proxy #56, the `studio capture` CLI #57)
+and in the GUI: a live-capture surface (#59) streams the proxy's events into the
+inspector through the effects channel (#58, ADR-0009), and explicit-fault
+criticals raise OS notifications live (#60, ADR-0011) — all **in-runner**
+(`update_fx` + `fx.spawn` + the effects-bound platform services), no runner-eject.
+
+Next is **S6 — public release & launch (0.5.0)**; see [ROADMAP.md](ROADMAP.md).
 
 ## What's done
 
@@ -163,12 +164,12 @@ Every issue landed:
 
 ## What's next
 
-**S5 — Live capture ⭐ (0.4.0)** — one issue remains: OS notifications on
-critical live failures (#60). The flagship is otherwise landed — the WS proxy,
-the `studio capture` CLI, and the live inspector surface (#54–#59): a live
-WebSocket proxy between a charge point and its CSMS, decoding OCPP frames in
-flight, running detection as events stream, recording to the canonical trace
-format, and surfacing it in a live timeline.
+**S6 — public release & launch (0.5.0)** — package the app (signed/notarized
+macOS + a Linux package via `native package`), freeze `contract-v1`, and polish
+docs for a first public release. Studio stays pre-1.0 while Zig, the Native SDK,
+and the toolkit conformance reference are all pre-1.0 (see the ROADMAP versioning
+note). The S5 flagship — the live WS proxy, the `studio capture` CLI, and the
+live inspector surface with notifications (#54–#60) — is landed.
 
 ## Known blockers / decisions pending
 
@@ -181,7 +182,7 @@ format, and surfacing it in a live timeline.
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports (#41) + anonymize (#42) + diff (#43) + replay core (#44); O(n) detection pending (#36) |
-| `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44) + live-capture view (#59) |
-| `capture` (live proxy) | ✅ S5: WS transport (#54) + frame decode (#55) + MITM proxy (#56) |
+| `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44) + live-capture view (#59) + live notifications (#60) |
+| `capture` (live proxy) | ✅ S5: WS transport (#54) + frame decode (#55) + MITM proxy (#56) + live notifications (#60) |
 | `cli` (headless) | ✅ inspect/report/diff/anonymize/ci/scenario (#45) + live `capture` (#57) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |
