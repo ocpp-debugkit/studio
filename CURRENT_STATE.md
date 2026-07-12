@@ -9,9 +9,12 @@
 ## Active milestone
 
 **S5 — Live capture (0.4.0): in progress.** S0–S4 are done — analysis parity, a
-headless CLI, and the native inspector. S5 is the flagship: a live WebSocket
-proxy between a charge point and its CSMS. First landing is the hardened
-RFC 6455 transport codec (#54, ADR-0008); see [ROADMAP.md](ROADMAP.md).
+headless CLI, and the native inspector. S5's flagship — a live WebSocket MITM
+proxy between a charge point and its CSMS — now works end to end from the
+terminal: WS codec (#54), decode (#55), proxy (#56), and the `studio capture`
+CLI (#57). The effects-channel spike (#58, ADR-0009) confirmed the live GUI
+(#59/#60) is feasible **in-runner** (via `update_fx` + `fx.spawn`), not a
+runner-eject; see [ROADMAP.md](ROADMAP.md).
 
 ## What's done
 
