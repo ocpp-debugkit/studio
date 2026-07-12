@@ -19,10 +19,12 @@ criticals raise OS notifications live (#60, ADR-0011) — all **in-runner**
 **S6 — public release & launch (0.5.0): in progress.** Packaging is wired
 (#70) — `native package` builds a macOS `.app` (ad-hoc `.dmg`) and a Linux
 `.tar.gz`, and a tag-triggered [release workflow](.github/workflows/release.yml)
-publishes both to a GitHub release (see [RELEASING.md](RELEASING.md)). Remaining:
-GUI test suite (#71), the frozen conformance contract (#72), release-ready docs
-(#73), and the v0.5.0 cut (#74). The menu-bar monitor and notarization are
-post-0.5; see [ROADMAP.md](ROADMAP.md).
+publishes both to a GitHub release (see [RELEASING.md](RELEASING.md)). The
+automation smoke now **drives** the GUI (#71) — clicking the replay transport,
+a filter facet, and the Live tab, asserting the semantics tree after each and
+screenshotting the inspector + live surfaces. Remaining: the frozen conformance
+contract (#72), release-ready docs (#73), and the v0.5.0 cut (#74). The menu-bar
+monitor and notarization are post-0.5; see [ROADMAP.md](ROADMAP.md).
 
 ## What's done
 
@@ -185,7 +187,7 @@ live inspector surface with notifications (#54–#60) — is landed.
 
 | Area | Status |
 | --- | --- |
-| `repo` (tooling, CI) | ✅ S0 CI; 🔨 S6 packaging + release workflow (#70) |
+| `repo` (tooling, CI) | ✅ S0 CI + S6 packaging/release (#70) + driven GUI suite (#71) |
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports (#41) + anonymize (#42) + diff (#43) + replay core (#44); O(n) detection pending (#36) |
 | `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44) + live-capture view (#59) + live notifications (#60) |
