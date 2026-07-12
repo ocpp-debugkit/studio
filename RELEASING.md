@@ -14,10 +14,12 @@ which builds and publishes a GitHub release with two artifacts:
 | macOS | `studio-X.Y.Z-macos-ReleaseFast.dmg` | A `.app` bundle, **ad-hoc signed** |
 | Linux | `studio-X.Y.Z-linux-ReleaseFast.tar.gz` | The `studio` binary + resources |
 
-**macOS Gatekeeper:** the ad-hoc build is not notarized, so first launch needs
-**right-click → Open** (or *System Settings → Privacy & Security → Open Anyway*).
-Notarization — which removes that prompt — is a post-0.5 follow-up; it needs an
-Apple Developer identity and signing credentials wired into CI as secrets.
+**macOS Gatekeeper:** the ad-hoc build is not notarized, so macOS quarantines the
+download and blocks first launch. Users clear it once with
+`xattr -dr com.apple.quarantine "/Applications/OCPP DebugKit Studio.app"` (or
+*System Settings → Privacy & Security → Open Anyway*) — see the README. This is a
+deliberate tradeoff; notarization, which removes the prompt, needs an Apple
+Developer identity and is out of scope for now.
 
 ## Cutting a release
 
@@ -45,9 +47,12 @@ Build a package without cutting a release (macOS):
 
 ```sh
 native build
-native package --target macos --signing adhoc --archive
-# → zig-out/package/studio.app  and  zig-out/package/studio-<ver>-macos-ReleaseFast.dmg
-open zig-out/package/studio.app   # smoke-launch it
+scripts/package-macos.sh 0.5.1
+# → zig-out/package/OCPP DebugKit Studio.app  and  zig-out/package/studio-0.5.1-macos-ReleaseFast.dmg
+open "zig-out/package/OCPP DebugKit Studio.app"   # smoke-launch it
 ```
 
-`native doctor --strict` gates the manifest; the release workflow runs it too.
+[`scripts/package-macos.sh`](scripts/package-macos.sh) signs `studio.app`, renames
+it to the display name, and builds the `.dmg` — see the script header for why the
+rename can't go through `native package --output` directly. `native doctor
+--strict` gates the manifest; the release workflow runs it too.

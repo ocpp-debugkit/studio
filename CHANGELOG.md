@@ -8,6 +8,13 @@ reference are all pre-1.0, minor (0.x) releases may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **macOS** — the packaged app bundle is now named `OCPP DebugKit Studio.app`
+  (previously `studio.app`), so its on-disk name matches its display name; the CLI
+  binary is unchanged (`studio`). The install docs now cover clearing the
+  Gatekeeper quarantine on the ad-hoc build.
+
 ## [0.5.0] — 2026-07-12
 
 Studio's first packaged, signed public release, assembled across milestones
