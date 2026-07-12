@@ -105,7 +105,12 @@ pub const Sink = struct {
         };
         self.seq = seq;
         try self.events.append(self.gpa, ev);
-        if (self.record) |w| try writeRecord(w, received_ms, origin, text);
+        if (self.record) |w| {
+            try writeRecord(w, received_ms, origin, text);
+            // Flush each record so `--ndjson` streams live (a no-op for the
+            // fixed-buffer writers used in tests).
+            w.flush() catch {};
+        }
     }
 
     /// Run detection over everything captured so far. Streaming callers invoke
