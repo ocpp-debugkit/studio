@@ -17,6 +17,9 @@ const types = ocpp.types;
 const Model = workspace.Model;
 const Msg = workspace.Msg;
 const LoadedTrace = workspace.LoadedTrace;
+const Surface = workspace.Surface;
+const CaptureStatus = workspace.CaptureStatus;
+const LiveCapture = workspace.LiveCapture;
 
 pub const Ui = canvas.Ui(Msg);
 const Node = Ui.Node;
@@ -27,6 +30,7 @@ const Node = Ui.Node;
 const row_extent: f32 = 44;
 
 pub fn view(ui: *Ui, model: *const Model) Node {
+    if (model.surface == .live) return liveView(ui, model);
     if (!model.hasTraces()) return emptyState(ui);
     const t = model.activeTrace().?;
     if (t.isError()) {
@@ -47,8 +51,28 @@ pub fn view(ui: *Ui, model: *const Model) Node {
         ui.separator(.{}),
         filterBar(ui, model),
         ui.separator(.{}),
-        activeBody(ui, model, filtered),
+        traceBody(ui, model, t, filtered),
         statusBar(ui, model, filtered),
+    });
+}
+
+// --- live-capture surface (#59) --------------------------------------------
+//
+// The live-capture session shown as a first-class inspector: a control strip
+// (endpoint config, start/stop, status, recording size) over the SAME timeline /
+// detail / failure widgets as an opened trace, driven off `model.live.trace`.
+// That trace is re-derived from the streamed NDJSON (workspace.zig), so it
+// correlates, detects, and stays viewport-bounded exactly like any other.
+
+fn liveView(ui: *Ui, model: *const Model) Node {
+    const t = &model.live.trace;
+    return ui.column(.{ .grow = 1 }, .{
+        topBar(ui, model),
+        ui.separator(.{}),
+        captureControls(ui, model),
+        ui.separator(.{}),
+        liveBody(ui, model, t),
+        liveStatusBar(ui, t),
     });
 }
 
@@ -59,53 +83,87 @@ fn emptyState(ui: *Ui) Node {
         ui.text(.{ .size = .heading }, "No trace open"),
         ui.text(.{}, "Open the built-in sample, or pass a trace file on the command line:"),
         ui.text(.{}, "studio path/to/trace.json"),
-        ui.button(.{ .on_press = .open_sample, .variant = .primary }, "Open sample"),
+        ui.row(.{ .gap = 8 }, .{
+            ui.button(.{ .on_press = .open_sample, .variant = .primary }, "Open sample"),
+            ui.button(.{ .on_press = .show_live, .variant = .secondary }, "Live capture"),
+        }),
     });
 }
 
-// --- top bar: tabs / single-trace name + close -----------------------------
+// --- top bar: trace tabs + live toggle + close -----------------------------
 
 fn topBar(ui: *Ui, model: *const Model) Node {
-    const tabs = model.open();
-    const left: Node = if (tabs.len > 1) tabStrip(ui, model) else ui.text(.{ .grow = 1 }, tabs[0].name);
     return ui.row(.{ .gap = 8, .cross = .center, .padding = 8 }, .{
-        left,
-        ui.spacer(1),
-        ui.button(.{ .on_press = .{ .close_trace = model.active }, .variant = .ghost, .size = .sm }, "Close"),
+        traceTabs(ui, model),
+        liveTab(ui, model),
+        closeControl(ui, model),
     });
 }
 
-fn tabStrip(ui: *Ui, model: *const Model) Node {
+/// The workspace tabs: one selectable button per open trace (empty-safe — a
+/// muted note when none are open, which the user only sees from the live
+/// surface). A tab is selected when it is the active trace AND the traces
+/// surface is showing, so the highlight moves to the Live tab in live mode.
+fn traceTabs(ui: *Ui, model: *const Model) Node {
     const tabs = model.open();
+    if (tabs.len == 0)
+        return ui.text(.{ .grow = 1, .style_tokens = .{ .foreground = .text_muted } }, "No traces open");
     const nodes = ui.arena.alloc(Node, tabs.len) catch {
         ui.failed = true;
-        return ui.row(.{}, .{});
+        return ui.row(.{ .grow = 1 }, .{});
     };
+    const on_traces = model.surface == .traces;
     for (tabs, 0..) |*t, i| {
+        const active = on_traces and i == model.active;
         nodes[i] = ui.button(.{
             .on_press = .{ .select_trace = i },
-            .selected = (i == model.active),
-            .variant = if (i == model.active) .secondary else .ghost,
+            .selected = active,
+            .variant = if (active) .secondary else .ghost,
             .size = .sm,
         }, t.name);
     }
     return ui.row(.{ .gap = 4, .cross = .center, .grow = 1 }, nodes);
 }
 
+/// The always-present Live toggle. Carries a dot while a capture is running so
+/// the session state is legible even from the traces surface.
+fn liveTab(ui: *Ui, model: *const Model) Node {
+    const selected = model.surface == .live;
+    const capturing = model.live.status == .capturing;
+    return ui.button(.{
+        .on_press = .show_live,
+        .selected = selected,
+        .variant = if (selected) .secondary else .ghost,
+        .size = .sm,
+        .icon = if (capturing) "circle-dot" else "",
+    }, "Live");
+}
+
+/// Close acts on the active workspace tab — shown only on the traces surface
+/// with at least one trace open.
+fn closeControl(ui: *Ui, model: *const Model) Node {
+    if (model.surface != .traces or !model.hasTraces()) return ui.spacer(0);
+    return ui.button(.{ .on_press = .{ .close_trace = model.active }, .variant = .ghost, .size = .sm }, "Close");
+}
+
 // --- active trace body: overview or error ----------------------------------
 
-fn activeBody(ui: *Ui, model: *const Model, filtered: ?[]const usize) Node {
-    const t = model.activeTrace().?;
-    // Timeline (left) / detail (right) fill the space above a fixed-height
-    // failure drawer. `split` is horizontal-only, so the vertical stack is a
-    // column: the split grows, the drawer keeps its height.
+/// The timeline / detail / failures body over trace `t`. Shared by the traces
+/// surface and the live surface (each passes its own trace); the virtual-list id
+/// keys off the surface so the two timelines keep independent scroll state.
+///
+/// Timeline (left) / detail (right) fill the space above a fixed-height failure
+/// drawer. `split` is horizontal-only, so the vertical stack is a column: the
+/// split grows, the drawer keeps its height.
+fn traceBody(ui: *Ui, model: *const Model, t: *const LoadedTrace, filtered: ?[]const usize) Node {
+    const list_id: []const u8 = if (model.surface == .live) "live-timeline" else "event-timeline";
     return ui.column(.{ .grow = 1 }, .{
         ui.split(.{
             .grow = 1,
             .value = model.timeline_split,
             .on_resize = Ui.valueMsg(.timeline_resized),
         }, .{
-            timelinePane(ui, t, filtered),
+            timelinePane(ui, t, filtered, list_id),
             detailPane(ui, t),
         }),
         ui.separator(.{}),
@@ -320,7 +378,7 @@ fn transportButton(ui: *Ui, label: []const u8, target: ?usize) Node {
     }, label);
 }
 
-fn timelinePane(ui: *Ui, t: *const LoadedTrace, filtered: ?[]const usize) Node {
+fn timelinePane(ui: *Ui, t: *const LoadedTrace, filtered: ?[]const usize, list_id: []const u8) Node {
     const count = if (filtered) |fi| fi.len else t.events.len;
     if (filtered != null and count == 0) {
         return ui.column(.{ .min_width = 360, .grow = 1 }, .{
@@ -332,7 +390,7 @@ fn timelinePane(ui: *Ui, t: *const LoadedTrace, filtered: ?[]const usize) Node {
         });
     }
     const opts = Ui.VirtualListOptions{
-        .id = "event-timeline",
+        .id = list_id,
         .item_count = count,
         .item_extent = row_extent,
         .overscan = 6,
@@ -1063,6 +1121,129 @@ fn failuresSummary(arena: std.mem.Allocator, failures: []const types.Failure) []
     return buf.items;
 }
 
+// --- live-capture controls -------------------------------------------------
+
+/// The control strip: the two endpoint fields, the start/stop button, and a
+/// status line (state + recording size). Endpoints are read-only while a
+/// capture runs (the session is bound to them for its life).
+fn captureControls(ui: *Ui, model: *const Model) Node {
+    const capturing = model.live.status == .capturing;
+    return ui.column(.{ .padding = 8, .gap = 8 }, .{
+        ui.row(.{ .gap = 10, .cross = .end }, .{
+            configField(ui, "Listen (host:port)", model.live.listen(), workspace.default_listen, Ui.inputMsg(.listen_input), capturing, "listen address"),
+            configField(ui, "Upstream (ws:// URL)", model.live.upstream(), workspace.default_upstream, Ui.inputMsg(.upstream_input), capturing, "upstream CSMS URL"),
+            startStopButton(ui, model),
+        }),
+        captureStatusRow(ui, model),
+    });
+}
+
+/// A labeled endpoint field. `disabled` renders it read-only (while capturing).
+fn configField(
+    ui: *Ui,
+    label: []const u8,
+    value: []const u8,
+    placeholder: []const u8,
+    on_input: Ui.InputMsgFn,
+    disabled: bool,
+    a11y_label: []const u8,
+) Node {
+    return ui.column(.{ .grow = 1, .gap = 4 }, .{
+        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, label),
+        ui.el(.text_field, .{
+            .grow = 1,
+            .min_width = 180,
+            .text = value,
+            .placeholder = placeholder,
+            .on_input = on_input,
+            .disabled = disabled,
+            .semantics = .{ .label = a11y_label },
+        }, .{}),
+    });
+}
+
+/// Start (primary; disabled until both endpoints are set) or Stop (destructive),
+/// depending on whether a capture is running.
+fn startStopButton(ui: *Ui, model: *const Model) Node {
+    if (model.live.status == .capturing)
+        return ui.button(.{ .on_press = .stop_capture, .variant = .destructive }, "Stop");
+    const ready = model.live.configured();
+    return ui.button(.{
+        .on_press = if (ready) .start_capture else null,
+        .variant = .primary,
+    }, "Start capture");
+}
+
+/// The status line under the fields: a colored dot + state label on the left, a
+/// recording-size readout on the right.
+fn captureStatusRow(ui: *Ui, model: *const Model) Node {
+    const color = captureStatusColor(model.live.status);
+    return ui.row(.{ .gap = 8, .cross = .center }, .{
+        ui.icon(.{ .width = 16, .style_tokens = .{ .foreground = color }, .semantics = .{ .label = "capture status" } }, "circle-dot"),
+        ui.text(.{ .style_tokens = .{ .foreground = color } }, captureStatusLabel(ui.arena, &model.live)),
+        ui.spacer(1),
+        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, recordingSummary(ui.arena, model)),
+    });
+}
+
+fn captureStatusColor(s: CaptureStatus) canvas.ColorTokenName {
+    return switch (s) {
+        .idle => .text_muted,
+        .capturing => .info,
+        .stopped => .text_muted,
+        .failed => .destructive,
+    };
+}
+
+/// Human-readable capture state; a failure carries its exit reason.
+fn captureStatusLabel(arena: std.mem.Allocator, live: *const LiveCapture) []const u8 {
+    return switch (live.status) {
+        .idle => "Ready",
+        .capturing => "Capturing\u{2026}",
+        .stopped => "Stopped",
+        .failed => if (live.exit_reason) |r|
+            (std.fmt.allocPrint(arena, "Failed ({s})", .{@tagName(r)}) catch "Failed")
+        else
+            "Failed",
+    };
+}
+
+/// "N events · M KB recorded" — the size of the in-memory NDJSON recording.
+fn recordingSummary(arena: std.mem.Allocator, model: *const Model) []const u8 {
+    const events = model.live.trace.events.len;
+    const kb = model.live.ndjson.items.len / 1024;
+    return std.fmt.allocPrint(arena, "{d} event{s} \u{00B7} {d} KB recorded", .{
+        events, if (events == 1) "" else "s", kb,
+    }) catch "";
+}
+
+// --- live-capture body -----------------------------------------------------
+
+/// The live timeline over `model.live.trace`: the shared timeline/detail/failure
+/// body once events arrive, or a state-appropriate note while empty / on error.
+/// The live surface never filters (the filter bar belongs to the traces
+/// surface), so the body is always unfiltered.
+fn liveBody(ui: *Ui, model: *const Model, t: *const LoadedTrace) Node {
+    if (t.isError()) return errorPanel(ui, t);
+    if (t.events.len == 0) return liveEmptyNote(ui, model.live.status);
+    return traceBody(ui, model, t, null);
+}
+
+const LiveNote = struct { title: []const u8, hint: []const u8 };
+
+fn liveEmptyNote(ui: *Ui, status: CaptureStatus) Node {
+    const n: LiveNote = switch (status) {
+        .idle => .{ .title = "Ready to capture", .hint = "Set the endpoints above, then press Start capture." },
+        .capturing => .{ .title = "Capturing\u{2026}", .hint = "Waiting for the first message. Point your charge point at the listen address." },
+        .stopped => .{ .title = "Capture stopped", .hint = "No messages were recorded." },
+        .failed => .{ .title = "Capture failed", .hint = "Check the endpoints and try again." },
+    };
+    return ui.column(.{ .grow = 1, .main = .center, .cross = .center, .gap = 6, .padding = 24 }, .{
+        ui.text(.{ .size = .heading }, n.title),
+        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, n.hint),
+    });
+}
+
 // --- status bar ------------------------------------------------------------
 
 fn statusBar(ui: *Ui, model: *const Model, filtered: ?[]const usize) Node {
@@ -1071,20 +1252,35 @@ fn statusBar(ui: *Ui, model: *const Model, filtered: ?[]const usize) Node {
         const msg = std.fmt.allocPrint(ui.arena, "Failed to load {s}: {s}", .{ t.name, t.load_error orelse "unknown error" }) catch "load failed";
         return ui.statusBar(.{}, msg);
     }
+    return ui.statusBar(.{}, traceStatusText(ui.arena, t, filtered));
+}
+
+/// The live status bar mirrors the trace one over `model.live.trace` (always
+/// unfiltered); an error surfaces the parse reason.
+fn liveStatusBar(ui: *Ui, t: *const LoadedTrace) Node {
+    if (t.isError()) {
+        const msg = std.fmt.allocPrint(ui.arena, "Live capture error: {s}", .{t.load_error orelse "unknown error"}) catch "live capture error";
+        return ui.statusBar(.{}, msg);
+    }
+    return ui.statusBar(.{}, traceStatusText(ui.arena, t, null));
+}
+
+/// The summary line for a loaded trace: event count (match subset when
+/// filtered), sessions, failure breakdown (or the skipped-detection note), and
+/// parse warnings. Shared by the trace and live status bars.
+fn traceStatusText(arena: std.mem.Allocator, t: *const LoadedTrace, filtered: ?[]const usize) []const u8 {
     // When a filter is active the count reflects matches out of the whole trace.
     const events_seg = if (filtered) |fi|
-        std.fmt.allocPrint(ui.arena, "{d} of {d} events", .{ fi.len, t.eventCount() }) catch ""
+        std.fmt.allocPrint(arena, "{d} of {d} events", .{ fi.len, t.eventCount() }) catch ""
     else
-        std.fmt.allocPrint(ui.arena, "{d} events", .{t.eventCount()}) catch "";
-    const text = if (t.detection_skipped)
-        std.fmt.allocPrint(ui.arena, "{s} \u{00B7} {d} sessions \u{00B7} detection skipped (large trace) \u{00B7} {d} parse warnings", .{
+        std.fmt.allocPrint(arena, "{d} events", .{t.eventCount()}) catch "";
+    if (t.detection_skipped)
+        return std.fmt.allocPrint(arena, "{s} \u{00B7} {d} sessions \u{00B7} detection skipped (large trace) \u{00B7} {d} parse warnings", .{
             events_seg, t.sessionCount(), t.warningCount(),
-        }) catch ""
-    else
-        std.fmt.allocPrint(ui.arena, "{s} \u{00B7} {d} sessions \u{00B7} {s} \u{00B7} {d} parse warnings", .{
-            events_seg, t.sessionCount(), failuresSummary(ui.arena, t.failures), t.warningCount(),
         }) catch "";
-    return ui.statusBar(.{}, text);
+    return std.fmt.allocPrint(arena, "{s} \u{00B7} {d} sessions \u{00B7} {s} \u{00B7} {d} parse warnings", .{
+        events_seg, t.sessionCount(), failuresSummary(arena, t.failures), t.warningCount(),
+    }) catch "";
 }
 
 // ---------------------------------------------------------------------------

@@ -10,11 +10,12 @@
 
 **S5 — Live capture (0.4.0): in progress.** S0–S4 are done — analysis parity, a
 headless CLI, and the native inspector. S5's flagship — a live WebSocket MITM
-proxy between a charge point and its CSMS — now works end to end from the
-terminal: WS codec (#54), decode (#55), proxy (#56), and the `studio capture`
-CLI (#57). The effects-channel spike (#58, ADR-0009) confirmed the live GUI
-(#59/#60) is feasible **in-runner** (via `update_fx` + `fx.spawn`), not a
-runner-eject; see [ROADMAP.md](ROADMAP.md).
+proxy between a charge point and its CSMS — works end to end from the terminal
+(WS codec #54, decode #55, proxy #56, the `studio capture` CLI #57) and now in
+the GUI: a live-capture surface (#59) streams the proxy's events into the
+inspector through the effects channel (#58, ADR-0009) — `update_fx` + `fx.spawn`,
+**in-runner**, not a runner-eject. Only OS notifications on critical live
+failures (#60) remain; see [ROADMAP.md](ROADMAP.md).
 
 ## What's done
 
@@ -162,10 +163,12 @@ Every issue landed:
 
 ## What's next
 
-**S5 — Live capture ⭐ (0.4.0)** — the flagship: a live WebSocket proxy between a
-charge point and its CSMS, decoding OCPP frames in flight, running detection as
-events stream, recording to the canonical trace format, and surfacing it in a
-live timeline with OS notifications on critical failures.
+**S5 — Live capture ⭐ (0.4.0)** — one issue remains: OS notifications on
+critical live failures (#60). The flagship is otherwise landed — the WS proxy,
+the `studio capture` CLI, and the live inspector surface (#54–#59): a live
+WebSocket proxy between a charge point and its CSMS, decoding OCPP frames in
+flight, running detection as events stream, recording to the canonical trace
+format, and surfacing it in a live timeline.
 
 ## Known blockers / decisions pending
 
@@ -178,7 +181,7 @@ live timeline with OS notifications on critical failures.
 | `repo` (tooling, CI) | ✅ done for S0 |
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports (#41) + anonymize (#42) + diff (#43) + replay core (#44); O(n) detection pending (#36) |
-| `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44); 🔨 live-capture streaming model + `update_fx`/`fx.spawn` (#59 pt1) |
-| `capture` (live proxy) | 🔨 S5 in progress: WS transport (#54) + frame decode (#55) + MITM proxy (#56) |
+| `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44) + live-capture view (#59) |
+| `capture` (live proxy) | ✅ S5: WS transport (#54) + frame decode (#55) + MITM proxy (#56) |
 | `cli` (headless) | ✅ inspect/report/diff/anonymize/ci/scenario (#45) + live `capture` (#57) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |

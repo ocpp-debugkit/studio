@@ -48,6 +48,17 @@ pub const max_live_bytes: usize = 8 * 1024 * 1024;
 pub const live_config_len: usize = 128;
 /// Display name for the live-capture trace.
 pub const live_trace_name = "live capture";
+/// First-run defaults for the live-capture endpoints, so the Start control is
+/// usable immediately (the user edits them in place). Loopback + a plausible
+/// CSMS URL — nothing is contacted until Start.
+pub const default_listen = "127.0.0.1:9000";
+pub const default_upstream = "ws://127.0.0.1:8080/ocpp";
+
+/// Which surface the inspector is showing: the opened-trace workspace, or the
+/// live-capture session. They render through the same timeline/detail/failure
+/// widgets over different `LoadedTrace`s; selection mutations route to whichever
+/// is active (`Model.mutTrace`).
+pub const Surface = enum { traces, live };
 
 /// Timeline search + filter state. Facets AND-compose; an inactive filter shows
 /// the whole timeline. Lives on the `Model` (never memcpy'd) and stores the
@@ -172,6 +183,12 @@ pub const Msg = union(enum) {
     toggle_severity_filter: types.FailureSeverity,
     /// Reset every facet and the search query.
     clear_filters,
+    /// Switch the inspector to the live-capture surface.
+    show_live,
+    /// A text edit (`insert`, `delete`, …) from the listen-endpoint field.
+    listen_input: canvas.TextInputEvent,
+    /// A text edit from the upstream-endpoint field.
+    upstream_input: canvas.TextInputEvent,
     /// Start a live capture using the model's configured endpoints.
     start_capture,
     /// Stop the running live capture.
@@ -185,6 +202,14 @@ pub const Msg = union(enum) {
 /// The lifecycle of a live-capture session.
 pub const CaptureStatus = enum { idle, capturing, stopped, failed };
 
+/// Copy a comptime string into a fresh endpoint buffer — used for the field
+/// defaults, so a new `LiveCapture` starts pre-filled with the example endpoints.
+fn seedConfig(comptime s: []const u8) [live_config_len]u8 {
+    var b: [live_config_len]u8 = undefined;
+    @memcpy(b[0..s.len], s);
+    return b;
+}
+
 /// Live-capture state: a streaming proxy session recorded into a growing trace.
 /// The worker's NDJSON stream accumulates in `ndjson`; the live `trace` is
 /// re-derived from it (reusing the whole engine — `loadTrace`), so the inspector
@@ -194,10 +219,15 @@ pub const LiveCapture = struct {
     status: CaptureStatus = .idle,
     /// `fx.spawn` identity for this session (for `fx.cancel`); bumped each start.
     key: u64 = 0,
-    listen_buf: [live_config_len]u8 = undefined,
-    listen_len: usize = 0,
-    upstream_buf: [live_config_len]u8 = undefined,
-    upstream_len: usize = 0,
+    listen_buf: [live_config_len]u8 = seedConfig(default_listen),
+    listen_len: usize = default_listen.len,
+    /// Caret/selection over `listen` — tracked model-side so text edits apply at
+    /// the right offset (the field widget itself is stateless; see the search
+    /// field in `Filter`).
+    listen_sel: canvas.TextSelection = .{},
+    upstream_buf: [live_config_len]u8 = seedConfig(default_upstream),
+    upstream_len: usize = default_upstream.len,
+    upstream_sel: canvas.TextSelection = .{},
     /// Accumulated NDJSON recording (bounded to `max_live_bytes`).
     ndjson: std.ArrayList(u8) = .empty,
     /// The live trace, re-derived from `ndjson`; owns its own arena.
@@ -210,6 +240,10 @@ pub const LiveCapture = struct {
     }
     pub fn upstream(self: *const LiveCapture) []const u8 {
         return self.upstream_buf[0..self.upstream_len];
+    }
+    /// True once both endpoints are set — the Start control gates on it.
+    pub fn configured(self: *const LiveCapture) bool {
+        return self.listen_len > 0 and self.upstream_len > 0;
     }
 };
 
@@ -230,6 +264,9 @@ pub const Model = struct {
     filter: Filter = .{},
     /// Live-capture state (streaming proxy session).
     live: LiveCapture = .{},
+    /// Which surface is showing — the opened-trace workspace or the live
+    /// capture. Selection mutations route to the matching trace (`mutTrace`).
+    surface: Surface = .traces,
     /// The running executable's path (argv[0]), for self-spawning the capture
     /// worker; set once at startup.
     self_exe_buf: [1024]u8 = undefined,
@@ -260,6 +297,7 @@ pub const Model = struct {
         self.traces[self.trace_count] = loadTrace(self.backing, name, bytes);
         self.active = self.trace_count;
         self.trace_count += 1;
+        self.surface = .traces; // show the trace just opened
     }
 
     /// Append a trace that failed before parsing (e.g. the file could not be
@@ -269,18 +307,36 @@ pub const Model = struct {
         self.traces[self.trace_count] = errorTrace(self.backing, name, reason);
         self.active = self.trace_count;
         self.trace_count += 1;
+        self.surface = .traces;
     }
 
     pub fn selectTrace(self: *Model, index: usize) void {
-        if (index < self.trace_count) self.active = index;
+        if (index < self.trace_count) {
+            self.active = index;
+            self.surface = .traces;
+        }
+    }
+
+    /// Show the live-capture surface.
+    pub fn showLive(self: *Model) void {
+        self.surface = .live;
+    }
+
+    /// The trace the user is currently interacting with: the live trace on the
+    /// live surface, else the active workspace tab (null when none are open).
+    /// Selection/toggle mutations route through this so the same timeline
+    /// widgets drive whichever surface is shown.
+    fn mutTrace(self: *Model) ?*LoadedTrace {
+        if (self.surface == .live) return &self.live.trace;
+        if (self.trace_count == 0) return null;
+        return &self.traces[self.active];
     }
 
     /// Select a timeline row (event index) in the active trace. Out-of-range
     /// indices are ignored. Changing the selection resets the payload-tree
     /// collapse state, so the newly selected event opens fully expanded.
     pub fn selectEvent(self: *Model, index: usize) void {
-        if (self.trace_count == 0) return;
-        const t = &self.traces[self.active];
+        const t = self.mutTrace() orelse return;
         if (index >= t.events.len) return;
         if (t.selected_event != index) t.payload_collapsed = PayloadCollapse.initEmpty();
         t.selected_event = index;
@@ -289,9 +345,9 @@ pub const Model = struct {
     /// Toggle the collapsed state of payload-tree node `id` for the active
     /// trace's selected event. Ids at or past the tracked range are ignored.
     pub fn togglePayloadNode(self: *Model, id: usize) void {
-        if (self.trace_count == 0) return;
         if (id >= max_payload_tree_nodes) return;
-        self.traces[self.active].payload_collapsed.toggle(id);
+        const t = self.mutTrace() orelse return;
+        t.payload_collapsed.toggle(id);
     }
 
     /// Jump to session `index` in the active trace by selecting its first
@@ -299,8 +355,7 @@ pub const Model = struct {
     /// so the first event maps back to a timeline row by its stable event id.
     /// Out-of-range indices and empty sessions are ignored.
     pub fn selectSession(self: *Model, index: usize) void {
-        if (self.trace_count == 0) return;
-        const t = &self.traces[self.active];
+        const t = self.mutTrace() orelse return;
         if (index >= t.sessions.len) return;
         const s = t.sessions[index];
         if (s.events.len == 0) return;
@@ -312,8 +367,7 @@ pub const Model = struct {
     /// open failure just collapses it, leaving the selection put. Out-of-range
     /// indices are ignored.
     pub fn selectFailure(self: *Model, index: usize) void {
-        if (self.trace_count == 0) return;
-        const t = &self.traces[self.active];
+        const t = self.mutTrace() orelse return;
         if (index >= t.failures.len) return;
         if (t.expanded_failure == index) {
             t.expanded_failure = null;
@@ -326,7 +380,7 @@ pub const Model = struct {
 
     /// Select the timeline row whose event id equals `id`, if present.
     fn selectEventById(self: *Model, id: []const u8) void {
-        const t = &self.traces[self.active];
+        const t = self.mutTrace() orelse return;
         for (t.events, 0..) |e, i| {
             if (std.mem.eql(u8, e.id, id)) {
                 self.selectEvent(i);
@@ -365,6 +419,19 @@ pub const Model = struct {
         const un = @min(upstream.len, live_config_len);
         @memcpy(self.live.upstream_buf[0..un], upstream[0..un]);
         self.live.upstream_len = un;
+    }
+
+    /// Apply a text edit from the listen-endpoint field. Ignored while capturing
+    /// — the endpoints are frozen for the life of a session.
+    pub fn applyListenInput(self: *Model, ev: canvas.TextInputEvent) void {
+        if (self.live.status == .capturing) return;
+        applyConfigField(&self.live.listen_buf, &self.live.listen_len, &self.live.listen_sel, ev);
+    }
+
+    /// Apply a text edit from the upstream-endpoint field (frozen while capturing).
+    pub fn applyUpstreamInput(self: *Model, ev: canvas.TextInputEvent) void {
+        if (self.live.status == .capturing) return;
+        applyConfigField(&self.live.upstream_buf, &self.live.upstream_len, &self.live.upstream_sel, ev);
     }
 
     /// Record the running executable's path (argv[0]) for self-spawning.
@@ -491,11 +558,31 @@ pub fn update(model: *Model, msg: Msg) void {
         .toggle_type_filter => |t| model.filter.message_type = if (model.filter.message_type == t) null else t,
         .toggle_severity_filter => |s| model.filter.severity = if (model.filter.severity == s) null else s,
         .clear_filters => model.clearFilters(),
+        .show_live => model.showLive(),
+        .listen_input => |ev| model.applyListenInput(ev),
+        .upstream_input => |ev| model.applyUpstreamInput(ev),
         .start_capture => model.startCapture(),
         .stop_capture => model.stopCapture(),
         .capture_line => |l| model.appendCaptureLine(l.line),
         .capture_exit => |e| model.captureExited(e),
     }
+}
+
+/// Apply one text-edit event to a fixed endpoint buffer + caret. The edit runs
+/// through a scratch copy (no aliasing with the live buffer), then is copied
+/// back and the caret re-clamped; an edit that would overflow the buffer is
+/// dropped. Mirrors `Model.applySearchInput` for the config fields.
+fn applyConfigField(buf: []u8, len: *usize, sel: *canvas.TextSelection, ev: canvas.TextInputEvent) void {
+    var scratch: [live_config_len]u8 = undefined;
+    const cur = canvas.TextEditState{ .text = buf[0..len.*], .selection = sel.* };
+    const next = canvas.applyTextInputEvent(cur, ev, &scratch) catch return;
+    const n = @min(next.text.len, buf.len);
+    @memcpy(buf[0..n], next.text[0..n]);
+    len.* = n;
+    sel.* = .{
+        .anchor = @min(next.selection.anchor, n),
+        .focus = @min(next.selection.focus, n),
+    };
 }
 
 /// Run the whole engine pipeline for one trace into a fresh arena. On any engine
@@ -874,4 +961,60 @@ test "live capture status transitions and gates lines when not capturing" {
     update(&model, .start_capture);
     try testing.expect(model.live.key != prev_key);
     try testing.expectEqual(@as(usize, 0), model.live.ndjson.items.len);
+}
+
+test "the live surface routes selection to the live trace, leaving the workspace put" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    // A workspace trace and a live session coexist.
+    update(&model, .open_sample);
+    try testing.expectEqual(Surface.traces, model.surface); // opening shows the trace
+    update(&model, .start_capture);
+    for ([_][]const u8{
+        "{\"timestamp\":1705312800000,\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m1\",\"BootNotification\",{}]}",
+        "{\"timestamp\":1705312800500,\"direction\":\"CSMS_TO_CS\",\"message\":[3,\"m1\",{\"status\":\"Accepted\"}]}",
+    }) |line| update(&model, .{ .capture_line = .{ .key = model.live.key, .line = line } });
+
+    // On the traces surface, select_event lands on the workspace trace.
+    update(&model, .{ .select_event = 3 });
+    try testing.expectEqual(@as(?usize, 3), model.traces[0].selected_event);
+    try testing.expectEqual(@as(?usize, null), model.live.trace.selected_event);
+
+    // Switch to live: the same message now drives the live trace; the workspace
+    // selection is untouched.
+    update(&model, .show_live);
+    try testing.expectEqual(Surface.live, model.surface);
+    update(&model, .{ .select_event = 1 });
+    try testing.expectEqual(@as(?usize, 1), model.live.trace.selected_event);
+    try testing.expectEqual(@as(?usize, 3), model.traces[0].selected_event);
+
+    // Selecting a workspace tab returns to the traces surface.
+    update(&model, .{ .select_trace = 0 });
+    try testing.expectEqual(Surface.traces, model.surface);
+}
+
+test "endpoint fields edit through the input path and freeze while capturing" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    // A fresh model is seeded with the example defaults, so Start is usable.
+    try testing.expectEqualStrings(default_listen, model.live.listen());
+    try testing.expectEqualStrings(default_upstream, model.live.upstream());
+    try testing.expect(model.live.configured());
+
+    // Clearing and typing a new listen endpoint round-trips through update.
+    update(&model, .{ .listen_input = .clear });
+    try testing.expectEqualStrings("", model.live.listen());
+    try testing.expect(!model.live.configured()); // one endpoint empty
+    update(&model, .{ .listen_input = .{ .insert_text = "0.0.0.0:7000" } });
+    try testing.expectEqualStrings("0.0.0.0:7000", model.live.listen());
+    try testing.expect(model.live.configured());
+
+    // While capturing, the endpoints are frozen for the life of the session.
+    update(&model, .start_capture);
+    update(&model, .{ .listen_input = .{ .insert_text = "XXX" } });
+    update(&model, .{ .upstream_input = .clear });
+    try testing.expectEqualStrings("0.0.0.0:7000", model.live.listen());
+    try testing.expectEqualStrings(default_upstream, model.live.upstream());
 }
