@@ -16,6 +16,8 @@ const parser = ocpp.parser;
 const timeline = ocpp.timeline;
 const detection = ocpp.detection;
 const types = ocpp.types;
+const EffectLine = native_sdk.EffectLine;
+const EffectExit = native_sdk.EffectExit;
 
 /// Upper bound on simultaneously open traces (workspace tabs). A hard cap keeps
 /// the tab strip and per-trace arenas bounded; opening past it is a no-op.
@@ -37,6 +39,15 @@ pub const PayloadCollapse = std.StaticBitSet(max_payload_tree_nodes);
 
 /// Max length of the timeline free-text search query.
 pub const max_search_len: usize = 128;
+
+/// Cap on the accumulated live-capture NDJSON recording — bounds the live
+/// trace's memory. (An on-disk `--out` recording, when the CLI writes one, is
+/// separate and unbounded.) Oldest whole lines drop once past it.
+pub const max_live_bytes: usize = 8 * 1024 * 1024;
+/// Max bytes for a live-capture endpoint string (`host:port`, `ws://…`).
+pub const live_config_len: usize = 128;
+/// Display name for the live-capture trace.
+pub const live_trace_name = "live capture";
 
 /// Timeline search + filter state. Facets AND-compose; an inactive filter shows
 /// the whole timeline. Lives on the `Model` (never memcpy'd) and stores the
@@ -161,6 +172,45 @@ pub const Msg = union(enum) {
     toggle_severity_filter: types.FailureSeverity,
     /// Reset every facet and the search query.
     clear_filters,
+    /// Start a live capture using the model's configured endpoints.
+    start_capture,
+    /// Stop the running live capture.
+    stop_capture,
+    /// One NDJSON event line from the live-capture worker's stdout.
+    capture_line: EffectLine,
+    /// The live-capture worker exited (or was cancelled / rejected).
+    capture_exit: EffectExit,
+};
+
+/// The lifecycle of a live-capture session.
+pub const CaptureStatus = enum { idle, capturing, stopped, failed };
+
+/// Live-capture state: a streaming proxy session recorded into a growing trace.
+/// The worker's NDJSON stream accumulates in `ndjson`; the live `trace` is
+/// re-derived from it (reusing the whole engine — `loadTrace`), so the inspector
+/// renders it exactly like any opened trace, viewport-bounded for free. Kept off
+/// the `traces` array so tab compaction never disturbs it.
+pub const LiveCapture = struct {
+    status: CaptureStatus = .idle,
+    /// `fx.spawn` identity for this session (for `fx.cancel`); bumped each start.
+    key: u64 = 0,
+    listen_buf: [live_config_len]u8 = undefined,
+    listen_len: usize = 0,
+    upstream_buf: [live_config_len]u8 = undefined,
+    upstream_len: usize = 0,
+    /// Accumulated NDJSON recording (bounded to `max_live_bytes`).
+    ndjson: std.ArrayList(u8) = .empty,
+    /// The live trace, re-derived from `ndjson`; owns its own arena.
+    trace: LoadedTrace = .{},
+    exit_code: i32 = 0,
+    exit_reason: ?native_sdk.EffectExitReason = null,
+
+    pub fn listen(self: *const LiveCapture) []const u8 {
+        return self.listen_buf[0..self.listen_len];
+    }
+    pub fn upstream(self: *const LiveCapture) []const u8 {
+        return self.upstream_buf[0..self.upstream_len];
+    }
 };
 
 pub const Model = struct {
@@ -178,6 +228,12 @@ pub const Model = struct {
     /// Search + filter applied to the active trace's timeline. Model-owned (not
     /// per-trace) so the query buffer keeps a stable address.
     filter: Filter = .{},
+    /// Live-capture state (streaming proxy session).
+    live: LiveCapture = .{},
+    /// The running executable's path (argv[0]), for self-spawning the capture
+    /// worker; set once at startup.
+    self_exe_buf: [1024]u8 = undefined,
+    self_exe_len: usize = 0,
 
     // --- derived (never stored) -------------------------------------------
 
@@ -299,6 +355,89 @@ pub const Model = struct {
         self.filter = .{};
     }
 
+    // --- live capture -----------------------------------------------------
+
+    /// Set the live-capture endpoints (before starting). Over-long values clamp.
+    pub fn configureCapture(self: *Model, listen_addr: []const u8, upstream: []const u8) void {
+        const ln = @min(listen_addr.len, live_config_len);
+        @memcpy(self.live.listen_buf[0..ln], listen_addr[0..ln]);
+        self.live.listen_len = ln;
+        const un = @min(upstream.len, live_config_len);
+        @memcpy(self.live.upstream_buf[0..un], upstream[0..un]);
+        self.live.upstream_len = un;
+    }
+
+    /// Record the running executable's path (argv[0]) for self-spawning.
+    pub fn setSelfExe(self: *Model, path: []const u8) void {
+        const n = @min(path.len, self.self_exe_buf.len);
+        @memcpy(self.self_exe_buf[0..n], path[0..n]);
+        self.self_exe_len = n;
+    }
+    pub fn selfExe(self: *const Model) []const u8 {
+        return self.self_exe_buf[0..self.self_exe_len];
+    }
+
+    /// Begin a live capture: clear the recording, mark capturing, fresh spawn
+    /// key. The `fx.spawn` itself is issued by the app's `update_fx`.
+    pub fn startCapture(self: *Model) void {
+        if (self.live.status == .capturing) return;
+        self.live.ndjson.clearRetainingCapacity();
+        self.live.trace.deinit(self.backing);
+        self.live.trace = .{};
+        self.live.key +%= 1;
+        if (self.live.key == 0) self.live.key = 1;
+        self.live.exit_reason = null;
+        self.live.status = .capturing;
+    }
+
+    /// Stop the running capture (marks stopped; `update_fx` issues `fx.cancel`).
+    pub fn stopCapture(self: *Model) void {
+        if (self.live.status == .capturing) self.live.status = .stopped;
+    }
+
+    /// Ingest one NDJSON event line from the capture worker: accumulate it
+    /// (bounded), then re-derive the live trace so the timeline reflects it.
+    pub fn appendCaptureLine(self: *Model, line: []const u8) void {
+        if (self.live.status != .capturing) return;
+        if (line.len == 0) return;
+        self.live.ndjson.appendSlice(self.backing, line) catch return;
+        self.live.ndjson.append(self.backing, '\n') catch return;
+        self.trimLiveBuffer();
+        self.reloadLiveTrace();
+    }
+
+    /// The capture worker exited: its reason decides the terminal status.
+    pub fn captureExited(self: *Model, exit: EffectExit) void {
+        self.live.exit_code = exit.code;
+        self.live.exit_reason = exit.reason;
+        self.live.status = switch (exit.reason) {
+            .cancelled, .exited => .stopped,
+            .signaled, .rejected, .spawn_failed => .failed,
+        };
+    }
+
+    /// Drop whole oldest lines from the front once the recording passes the cap.
+    fn trimLiveBuffer(self: *Model) void {
+        const items = self.live.ndjson.items;
+        if (items.len <= max_live_bytes) return;
+        var cut = items.len - max_live_bytes;
+        while (cut < items.len and items[cut] != '\n') cut += 1;
+        if (cut < items.len) cut += 1; // past the newline: keep whole lines
+        std.mem.copyForwards(u8, items[0 .. items.len - cut], items[cut..]);
+        self.live.ndjson.items.len -= cut;
+    }
+
+    /// Re-derive the live trace from the accumulated NDJSON, preserving the
+    /// selected row when it still exists.
+    fn reloadLiveTrace(self: *Model) void {
+        const prev = self.live.trace.selected_event;
+        self.live.trace.deinit(self.backing);
+        self.live.trace = loadTrace(self.backing, live_trace_name, self.live.ndjson.items);
+        if (prev) |s| {
+            if (s < self.live.trace.events.len) self.live.trace.selected_event = s;
+        }
+    }
+
     /// Close trace `index`, freeing its arena and compacting the tab list.
     pub fn closeTrace(self: *Model, index: usize) void {
         if (index >= self.trace_count) return;
@@ -325,6 +464,8 @@ pub const Model = struct {
         while (i < self.trace_count) : (i += 1) self.traces[i].deinit(self.backing);
         self.trace_count = 0;
         self.active = 0;
+        self.live.trace.deinit(self.backing);
+        self.live.ndjson.deinit(self.backing);
     }
 };
 
@@ -350,6 +491,10 @@ pub fn update(model: *Model, msg: Msg) void {
         .toggle_type_filter => |t| model.filter.message_type = if (model.filter.message_type == t) null else t,
         .toggle_severity_filter => |s| model.filter.severity = if (model.filter.severity == s) null else s,
         .clear_filters => model.clearFilters(),
+        .start_capture => model.startCapture(),
+        .stop_capture => model.stopCapture(),
+        .capture_line => |l| model.appendCaptureLine(l.line),
+        .capture_exit => |e| model.captureExited(e),
     }
 }
 
@@ -679,4 +824,54 @@ test "the workspace is bounded at max_open_traces" {
     var i: usize = 0;
     while (i < max_open_traces + 3) : (i += 1) update(&model, .open_sample);
     try testing.expectEqual(max_open_traces, model.trace_count);
+}
+
+test "live capture streams NDJSON lines into a growing, correlated trace" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    model.configureCapture("127.0.0.1:9000", "ws://10.0.0.5:9000/ocpp");
+    update(&model, .start_capture);
+    try testing.expectEqual(CaptureStatus.capturing, model.live.status);
+    try testing.expectEqual(@as(usize, 0), model.live.trace.events.len);
+
+    // Each line is exactly what `studio capture --ndjson` emits (see proxy.zig).
+    const lines = [_][]const u8{
+        "{\"timestamp\":1705312800000,\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m1\",\"BootNotification\",{}]}",
+        "{\"timestamp\":1705312800500,\"direction\":\"CSMS_TO_CS\",\"message\":[3,\"m1\",{\"status\":\"Accepted\"}]}",
+        "{\"timestamp\":1705312801000,\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m2\",\"Heartbeat\",{}]}",
+    };
+    for (lines) |line| update(&model, .{ .capture_line = .{ .key = model.live.key, .line = line } });
+
+    try testing.expectEqual(@as(usize, 3), model.live.trace.events.len);
+    try testing.expectEqualStrings("BootNotification", model.live.trace.events[0].action.?);
+    try testing.expectEqual(types.Direction.cs_to_csms, model.live.trace.events[0].direction);
+    // The live trace correlates and detects exactly like an opened trace.
+    try testing.expect(model.live.trace.sessions.len >= 1);
+    try testing.expect(!model.live.trace.isError());
+}
+
+test "live capture status transitions and gates lines when not capturing" {
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    update(&model, .start_capture);
+    try testing.expectEqual(CaptureStatus.capturing, model.live.status);
+    update(&model, .stop_capture);
+    try testing.expectEqual(CaptureStatus.stopped, model.live.status);
+
+    // A rejected spawn marks the session failed.
+    update(&model, .start_capture);
+    update(&model, .{ .capture_exit = .{ .key = model.live.key, .reason = .rejected } });
+    try testing.expectEqual(CaptureStatus.failed, model.live.status);
+
+    // Lines that arrive after the session ends are ignored.
+    update(&model, .{ .capture_line = .{ .key = model.live.key, .line = "{\"message\":[2,\"m9\",\"Heartbeat\",{}]}" } });
+    try testing.expectEqual(@as(usize, 0), model.live.trace.events.len);
+
+    // A fresh start bumps the cancel key and clears the prior recording.
+    const prev_key = model.live.key;
+    update(&model, .start_capture);
+    try testing.expect(model.live.key != prev_key);
+    try testing.expectEqual(@as(usize, 0), model.live.ndjson.items.len);
 }
