@@ -9,7 +9,7 @@
 
 Studio is built in [Zig](https://ziglang.org) on the [Native SDK](https://github.com/vercel-labs/native) — native-rendered, no browser, no Electron. It starts instantly, stays small, and does the things a browser tab fundamentally cannot: open raw sockets, watch the filesystem, and run for days as a background monitor.
 
-> 🚧 **Early development.** The foundation is in place (a native window, green CI on macOS + Linux, an automation-driven smoke test). The OCPP engine and inspector UI are next — see the [roadmap](ROADMAP.md).
+![The Studio inspector: a virtualized event timeline, message inspector with session correlation, and a failure drawer.](docs/assets/inspector.png)
 
 ## The ecosystem
 
@@ -22,26 +22,56 @@ Studio is one of two independent products under the OCPP DebugKit umbrella:
 
 The two share **no code**. They meet only at a *conformance contract*: the same trace format, the same normalized event model, the same failure taxonomy, and the same scenario fixtures. A trace captured in Studio opens in the toolkit's web inspector, and vice versa — two independent implementations, one format, checked in CI on every change. See **[the conformance contract](docs/CONTRACT.md)** (`contract-v1`) and [ADR-0001](docs/adr/0001-independent-implementation.md).
 
-## What it will do
+## What it does
 
-The near-term vision, in priority order (full detail in the [roadmap](ROADMAP.md)):
+- **Inspect** — open JSON / JSONL / bare-array traces in a virtualized timeline that stays smooth past **500k events**; unpack any message (raw OCPP-J array, normalized fields, a payload disclosure tree), see the session it correlates into, and search / filter by action, direction, type, or severity.
+- **Detect** — the full **OCPP 1.6J failure taxonomy** (16 rules), bit-for-bit conformant with the toolkit's reference, ranked critical → warning → info with remediation steps.
+- **Watch** — a **live WebSocket proxy** between a charge point and its CSMS: decode OCPP frames in flight, run detection as events stream, record to the canonical trace format, and get an **OS notification** the moment a critical failure appears.
+- **Prove** — Markdown / HTML reports, semantic trace diffing, anonymize-on-export, and step-through replay.
+- **Scale** — native performance with no GC; stream-parse traces far past what a browser tab can hold.
+- **Script** — the same binary is a headless CLI (`inspect` / `report` / `diff` / `anonymize` / `capture` / `ci`) for pipelines and automation.
 
-- **Inspect** — open JSON / JSONL / bare-array traces; virtualized timeline, per-message inspector, session correlation, failure list.
-- **Detect** — the full OCPP 1.6J failure taxonomy, streaming, as events arrive.
-- **Watch** — a live WebSocket proxy between charge point and CSMS, decoding OCPP frames in flight and recording them to the canonical trace format.
-- **Prove** — reports, trace diffing, anonymize-on-export, and wall-clock replay.
-- **Scale** — stream-parse traces far past what a browser tab can hold.
+## Install
 
-## Quick start
+Download the latest release for your platform from the
+[**Releases**](https://github.com/ocpp-debugkit/studio/releases) page.
 
-Studio is a source-first project during early development.
+- **macOS** — open the `.dmg` and drag *OCPP DebugKit Studio* to Applications. The
+  0.5.0 build is **ad-hoc signed** (not yet notarized), so the first launch needs
+  **right-click → Open** (or *System Settings → Privacy & Security → Open Anyway*).
+- **Linux** — extract the `.tar.gz` and run the `studio` binary. Requires GTK 4
+  (`libgtk-4`, `libwebkitgtk-6.0`).
 
-**Prerequisites**
+Studio is pre-1.0 (0.x) while Zig, the Native SDK, and the toolkit conformance
+reference are all pre-1.0 — see the [roadmap](ROADMAP.md).
 
-- [Zig](https://ziglang.org/download/) `0.16.0`
-- The Native SDK CLI: `npm install -g @native-sdk/cli`
+## Usage
 
-**Build and run**
+Open a trace in the GUI, or drive the headless CLI:
+
+```sh
+studio path/to/trace.json                      # open the inspector on a trace
+studio                                          # open with the built-in sample
+
+# Live capture: proxy a charge point ↔ CSMS session and stream it to a file
+studio capture --listen 127.0.0.1:9000 \
+               --upstream ws://csms.example:9000/ocpp --ndjson > session.jsonl
+
+# Headless analysis (stdout)
+studio inspect trace.json                       # a parsed + analyzed summary
+studio report trace.json -f html > report.html  # a full report (markdown | html)
+studio diff before.json after.json              # semantic diff of two traces
+studio anonymize trace.json > shareable.json    # strip sensitive fields
+studio ci                                        # run the conformance contract (exit 0/1)
+```
+
+Point your charge point (or the toolkit's tooling) at the `--listen` address and
+its traffic is proxied to `--upstream`, decoded, and recorded. Full CLI ⇄ toolkit
+parity is documented in [docs/cli-parity.md](docs/cli-parity.md).
+
+## Build from source
+
+**Prerequisites:** [Zig](https://ziglang.org/download/) `0.16.0` and the Native SDK CLI (`npm install -g @native-sdk/cli`).
 
 ```sh
 git clone https://github.com/ocpp-debugkit/studio.git
@@ -53,7 +83,8 @@ native build    # produce a ReleaseFast binary in zig-out/bin/
 native check    # validate src/*.native markup and app.zon
 ```
 
-The `native` CLI owns the build — there is no `build.zig` to manage.
+The `native` CLI owns the build — there is no `build.zig` to manage. To build a
+distributable package, see [RELEASING.md](RELEASING.md).
 
 ## Non-goals
 
@@ -65,7 +96,7 @@ Studio is a debugging instrument, not infrastructure. It is **not**:
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and point your tooling at [AGENTS.md](AGENTS.md) for a structured overview of the architecture and conventions. [CURRENT_STATE.md](CURRENT_STATE.md) tracks what is built and what is in progress.
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and point your tooling at [AGENTS.md](AGENTS.md) for a structured overview of the architecture and conventions. [CURRENT_STATE.md](CURRENT_STATE.md) tracks what is built and what is in progress; [CHANGELOG.md](CHANGELOG.md) records what shipped in each release.
 
 ## Security
 
