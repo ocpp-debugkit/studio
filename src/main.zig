@@ -58,6 +58,33 @@ const InspectorApp = native_sdk.UiApp(Model, Msg);
 /// own ingestion policy on the bytes (raised for trusted files in #29).
 const max_trace_file_bytes: usize = 256 * 1024 * 1024;
 
+/// The effects-capable update: runs the pure `workspace.update`, then issues the
+/// live-capture effects — on start, spawn the capture worker (`studio capture …
+/// --ndjson`), whose stdout NDJSON lines stream back as `capture_line` Msgs; on
+/// stop, cancel it. See ADR-0009.
+fn updateFx(model: *Model, msg: Msg, fx: *InspectorApp.Effects) void {
+    workspace.update(model, msg);
+    switch (msg) {
+        .start_capture => if (model.live.status == .capturing) {
+            const argv = [_][]const u8{
+                model.selfExe(), "capture",
+                "--listen",      model.live.listen(),
+                "--upstream",    model.live.upstream(),
+                "--ndjson",
+            };
+            fx.spawn(.{
+                .key = model.live.key,
+                .argv = &argv,
+                .output = .lines,
+                .on_line = InspectorApp.Effects.lineMsg(.capture_line),
+                .on_exit = InspectorApp.Effects.exitMsg(.capture_exit),
+            });
+        },
+        .stop_capture => fx.cancel(model.live.key),
+        else => {},
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     // Second face: if argv names a CLI subcommand, run it to completion and exit
     // BEFORE any window/app setup — no GUI is created. A bare trace path (or no
@@ -70,7 +97,7 @@ pub fn main(init: std.process.Init) !void {
         .name = "studio",
         .scene = shell_scene,
         .canvas_label = canvas_label,
-        .update = update,
+        .update_fx = updateFx,
         .view = view,
     });
     defer app_state.destroy();
@@ -101,6 +128,7 @@ fn openTracesFromArgs(model: *Model, init: std.process.Init) void {
     const alloc = std.heap.page_allocator;
     const args = init.minimal.args.toSlice(alloc) catch return;
     defer alloc.free(args);
+    if (args.len > 0) model.setSelfExe(args[0]);
     if (args.len <= 1) return;
     for (args[1..]) |path| {
         const name = std.fs.path.basename(path);
