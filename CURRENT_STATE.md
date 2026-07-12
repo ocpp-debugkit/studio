@@ -16,7 +16,13 @@ inspector through the effects channel (#58, ADR-0009), and explicit-fault
 criticals raise OS notifications live (#60, ADR-0011) — all **in-runner**
 (`update_fx` + `fx.spawn` + the effects-bound platform services), no runner-eject.
 
-Next is **S6 — public release & launch (0.5.0)**; see [ROADMAP.md](ROADMAP.md).
+**S6 — public release & launch (0.5.0): in progress.** Packaging is wired
+(#70) — `native package` builds a macOS `.app` (ad-hoc `.dmg`) and a Linux
+`.tar.gz`, and a tag-triggered [release workflow](.github/workflows/release.yml)
+publishes both to a GitHub release (see [RELEASING.md](RELEASING.md)). Remaining:
+GUI test suite (#71), the frozen conformance contract (#72), release-ready docs
+(#73), and the v0.5.0 cut (#74). The menu-bar monitor and notarization are
+post-0.5; see [ROADMAP.md](ROADMAP.md).
 
 ## What's done
 
@@ -179,7 +185,7 @@ live inspector surface with notifications (#54–#60) — is landed.
 
 | Area | Status |
 | --- | --- |
-| `repo` (tooling, CI) | ✅ done for S0 |
+| `repo` (tooling, CI) | ✅ S0 CI; 🔨 S6 packaging + release workflow (#70) |
 | `docs` (docs, ADRs) | ✅ done for S0 |
 | `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports (#41) + anonymize (#42) + diff (#43) + replay core (#44); O(n) detection pending (#36) |
 | `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44) + live-capture view (#59) + live notifications (#60) |
