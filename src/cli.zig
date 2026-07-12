@@ -25,6 +25,8 @@ const report = ocpp.report;
 const anonymize = ocpp.anonymize;
 const diff = ocpp.diff;
 const conformance = ocpp.conformance;
+const proxy = @import("capture/capture.zig").proxy;
+const net = std.Io.net;
 
 const Allocator = std.mem.Allocator;
 
@@ -55,6 +57,7 @@ pub fn maybeRun(init: std.process.Init) ?u8 {
     if (eql(cmd, "anonymize")) return cmdAnonymize(gpa, init, rest);
     if (eql(cmd, "ci")) return cmdCi(gpa, init.io);
     if (eql(cmd, "scenario")) return cmdScenario(gpa, init.io, rest);
+    if (eql(cmd, "capture")) return cmdCapture(gpa, init, rest);
     if (eql(cmd, "help") or eql(cmd, "--help") or eql(cmd, "-h")) {
         _ = emit(init.io, help_text);
         return 0;
@@ -73,6 +76,8 @@ const help_text =
     \\  anonymize <file>               Strip sensitive fields (stdout).
     \\  ci                             Run the conformance scenarios; exit 0/1.
     \\  scenario list | run <name>     List or run a conformance scenario.
+    \\  capture --listen H:P --upstream ws://H:P [--ndjson]
+    \\                                 Live WS proxy: relay + record a CP<->CSMS session.
     \\
     \\With no command, a trace path opens the GUI: studio path/to/trace.json
     \\
@@ -339,6 +344,125 @@ fn cmdScenario(gpa: Allocator, io: std.Io, args: []const []const u8) u8 {
     return usageErr("scenario: expected 'list' or 'run <name>'");
 }
 
+const CaptureOptions = struct {
+    listen_host: []const u8,
+    listen_port: u16,
+    upstream_host: []const u8,
+    upstream_port: u16,
+    /// `host:port` used for the upstream `Host` header.
+    upstream_authority: []const u8,
+    ndjson: bool,
+};
+
+const CaptureArgError = error{ MissingListen, MissingUpstream, BadListen, BadUpstream, TlsUnsupported, Unexpected };
+
+const HostPort = struct { host: []const u8, port: u16 };
+
+/// Split `host:port` on the last colon. An empty host uses `default_host`; a
+/// bare value with no `:port` uses `default_port` (null → a port is required).
+fn splitHostPort(s: []const u8, default_host: []const u8, default_port: ?u16) ?HostPort {
+    if (std.mem.lastIndexOfScalar(u8, s, ':')) |idx| {
+        const host = if (idx == 0) default_host else s[0..idx];
+        const port = std.fmt.parseInt(u16, s[idx + 1 ..], 10) catch return null;
+        return .{ .host = host, .port = port };
+    }
+    if (default_port) |dp| return .{ .host = s, .port = dp };
+    return null;
+}
+
+/// Parse a `ws://host:port/path` upstream: scheme and path are optional and the
+/// path is ignored (the proxy mirrors the CP's request path). `wss://` is
+/// rejected — TLS is post-0.5 (ADR-0008).
+fn parseUpstream(s: []const u8) CaptureArgError!HostPort {
+    var rest = s;
+    if (std.mem.startsWith(u8, rest, "wss://")) return error.TlsUnsupported;
+    if (std.mem.startsWith(u8, rest, "ws://")) rest = rest["ws://".len..];
+    const authority = if (std.mem.indexOfScalar(u8, rest, '/')) |slash| rest[0..slash] else rest;
+    return splitHostPort(authority, "127.0.0.1", 80) orelse error.BadUpstream;
+}
+
+/// Pure argument parser for `capture` — unit-tested, no I/O.
+fn parseCaptureArgs(args: []const []const u8) CaptureArgError!CaptureOptions {
+    var listen: ?[]const u8 = null;
+    var upstream: ?[]const u8 = null;
+    var ndjson = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (eql(arg, "--listen")) {
+            i += 1;
+            if (i >= args.len) return error.BadListen;
+            listen = args[i];
+        } else if (eql(arg, "--upstream")) {
+            i += 1;
+            if (i >= args.len) return error.BadUpstream;
+            upstream = args[i];
+        } else if (eql(arg, "--ndjson")) {
+            ndjson = true;
+        } else return error.Unexpected;
+    }
+    const l = listen orelse return error.MissingListen;
+    const u = upstream orelse return error.MissingUpstream;
+    const la = splitHostPort(l, "127.0.0.1", null) orelse return error.BadListen;
+    const authority = if (std.mem.startsWith(u8, u, "ws://")) u["ws://".len..] else u;
+    const ua = try parseUpstream(u);
+    return .{
+        .listen_host = la.host,
+        .listen_port = la.port,
+        .upstream_host = ua.host,
+        .upstream_port = ua.port,
+        .upstream_authority = if (std.mem.indexOfScalar(u8, authority, '/')) |slash| authority[0..slash] else authority,
+        .ndjson = ndjson,
+    };
+}
+
+/// `capture` — a live WebSocket MITM proxy: relay a CP<->CSMS session, decode and
+/// record it, and run detection. One session, then exit. With `--ndjson`, each
+/// captured event streams to stdout as a JSONL line (redirect to save a trace —
+/// `studio capture … --ndjson > session.jsonl`); otherwise a summary is printed.
+fn cmdCapture(gpa: Allocator, init: std.process.Init, args: []const []const u8) u8 {
+    const opts = parseCaptureArgs(args) catch |e| return usageErr(switch (e) {
+        error.MissingListen => "capture: missing --listen <host:port>",
+        error.MissingUpstream => "capture: missing --upstream ws://<host:port>",
+        error.BadListen => "capture: invalid --listen (want host:port)",
+        error.BadUpstream => "capture: invalid --upstream (want ws://host:port)",
+        error.TlsUnsupported => "capture: wss:// (TLS) is not supported yet",
+        error.Unexpected => "capture: unexpected argument",
+    });
+
+    const io = init.io;
+    const listen_addr = net.IpAddress.parse(opts.listen_host, opts.listen_port) catch
+        return usageErr("capture: --listen host must be an IP address");
+    const upstream_addr = net.IpAddress.parse(opts.upstream_host, opts.upstream_port) catch
+        return usageErr("capture: --upstream host must be an IP address");
+
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var stdout_buf: [64 * 1024]u8 = undefined;
+    var fw = std.Io.File.stdout().writer(io, &stdout_buf);
+    const w = &fw.interface;
+
+    var sink = proxy.Sink{ .gpa = a };
+    defer sink.deinit();
+    if (opts.ndjson) sink.record = w;
+
+    proxy.run(io, a, listen_addr, upstream_addr, opts.upstream_authority, &sink, .{ .wall = io }) catch |e|
+        return renderErr("capture", e);
+    if (opts.ndjson) w.flush() catch return 1;
+
+    // Session summary. With --ndjson stdout is the trace stream, so it goes to
+    // stderr; otherwise to stdout.
+    const failures: []const types.Failure = sink.detect(a) catch &.{};
+    if (opts.ndjson) {
+        std.debug.print("captured {d} events, {d} failures\n", .{ sink.count(), failures.len });
+        return 0;
+    }
+    const summary = std.fmt.allocPrint(a, "Captured {d} events, {d} failures.\n", .{ sink.count(), failures.len }) catch return 1;
+    return emit(io, summary);
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
@@ -468,4 +592,35 @@ test "runNamed distinguishes a known scenario from an unknown one" {
     var out2: [1024]u8 = undefined;
     var w2 = std.Io.Writer.fixed(&out2);
     try testing.expectEqual(@as(?bool, null), try conformance.runNamed(a, &w2, "does-not-exist"));
+}
+
+test "parseCaptureArgs parses listen, upstream, and ndjson" {
+    const args = [_][]const u8{ "--listen", "127.0.0.1:8080", "--upstream", "ws://10.0.0.5:9000/ocpp", "--ndjson" };
+    const opts = try parseCaptureArgs(&args);
+    try testing.expectEqualStrings("127.0.0.1", opts.listen_host);
+    try testing.expectEqual(@as(u16, 8080), opts.listen_port);
+    try testing.expectEqualStrings("10.0.0.5", opts.upstream_host);
+    try testing.expectEqual(@as(u16, 9000), opts.upstream_port);
+    try testing.expectEqualStrings("10.0.0.5:9000", opts.upstream_authority);
+    try testing.expect(opts.ndjson);
+}
+
+test "parseCaptureArgs: defaults, missing args, and rejections" {
+    // Empty host defaults to loopback; upstream without a port defaults to 80.
+    const ok = [_][]const u8{ "--listen", ":8080", "--upstream", "ws://10.0.0.5" };
+    const opts = try parseCaptureArgs(&ok);
+    try testing.expectEqualStrings("127.0.0.1", opts.listen_host);
+    try testing.expectEqual(@as(u16, 80), opts.upstream_port);
+    try testing.expect(!opts.ndjson);
+
+    const missing_up = [_][]const u8{ "--listen", "127.0.0.1:8080" };
+    try testing.expectError(error.MissingUpstream, parseCaptureArgs(&missing_up));
+    const missing_listen = [_][]const u8{ "--upstream", "ws://x:1" };
+    try testing.expectError(error.MissingListen, parseCaptureArgs(&missing_listen));
+    const no_port = [_][]const u8{ "--listen", "127.0.0.1", "--upstream", "ws://10.0.0.5:9000" };
+    try testing.expectError(error.BadListen, parseCaptureArgs(&no_port));
+    const tls = [_][]const u8{ "--listen", "127.0.0.1:8080", "--upstream", "wss://secure:443" };
+    try testing.expectError(error.TlsUnsupported, parseCaptureArgs(&tls));
+    const bogus = [_][]const u8{"--frobnicate"};
+    try testing.expectError(error.Unexpected, parseCaptureArgs(&bogus));
 }

@@ -177,5 +177,5 @@ live timeline with OS notifications on critical failures.
 | `ocpp` (engine) | ✅ S2 + ingestion (#29) + reports (#41) + anonymize (#42) + diff (#43) + replay core (#44); O(n) detection pending (#36) |
 | `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44) |
 | `capture` (live proxy) | 🔨 S5 in progress: WS transport (#54) + frame decode (#55) + MITM proxy (#56) |
-| `cli` (headless) | ✅ inspect/report/diff/anonymize/ci/scenario (#45) |
+| `cli` (headless) | ✅ inspect/report/diff/anonymize/ci/scenario (#45) + live `capture` (#57) |
 | `conformance` | ✅ done for S2 (15/15, `contract-v1`) |
