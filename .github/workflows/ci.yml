@@ -68,12 +68,12 @@ jobs:
         run: npm install -g @native-sdk/cli@0.4.1
       - name: Build headless app (automation enabled)
         run: native build -Dplatform=linux -Dautomation=true
-      - name: Drive the app headless and assert the widget tree
+      - name: Drive the GUI headless and assert the widget tree
         run: ./scripts/smoke.sh
-      - name: Upload rendered screenshot
+      - name: Upload rendered screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-screenshot
-          path: .zig-cache/native-sdk-automation/screenshot-main-canvas.png
+          name: gui-screenshots
+          path: .zig-cache/native-sdk-automation/screenshot-*.png
           if-no-files-found: ignore
