@@ -27,12 +27,10 @@ jobs:
           - os: macos-latest
             target: macos
             build_flags: ""
-            package_flags: "--signing adhoc"
             artifact: "zig-out/package/*.dmg"
           - os: ubuntu-latest
             target: linux
             build_flags: "-Dplatform=linux"
-            package_flags: ""
             artifact: "zig-out/package/*.tar.gz"
     steps:
       - uses: actions/checkout@v5
@@ -55,8 +53,18 @@ jobs:
         run: native doctor
       - name: Build release binary
         run: native build ${{ matrix.build_flags }}
-      - name: Package
-        run: native package --target ${{ matrix.target }} ${{ matrix.package_flags }} --archive
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: native package --target linux --archive
+      - name: Package (macOS)
+        # native package signs the space-free studio.app, then the script
+        # renames it to "OCPP DebugKit Studio.app" and builds the .dmg (the SDK
+        # can't sign a bundle path with spaces). TAG comes through the
+        # environment (injection-safe).
+        if: runner.os == 'macOS'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash scripts/package-macos.sh "${TAG#v}"
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:

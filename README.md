@@ -33,14 +33,29 @@ The two share **no code**. They meet only at a *conformance contract*: the same 
 
 ## Install
 
-Download the latest release for your platform from the
+Download the latest build for your platform from the
 [**Releases**](https://github.com/ocpp-debugkit/studio/releases) page.
 
-- **macOS** — open the `.dmg` and drag *OCPP DebugKit Studio* to Applications. The
-  0.5.0 build is **ad-hoc signed** (not yet notarized), so the first launch needs
-  **right-click → Open** (or *System Settings → Privacy & Security → Open Anyway*).
-- **Linux** — extract the `.tar.gz` and run the `studio` binary. Requires GTK 4
-  (`libgtk-4`, `libwebkitgtk-6.0`).
+### macOS (Apple silicon)
+
+Open the `.dmg` and drag **OCPP DebugKit Studio** to Applications. The build is
+**ad-hoc signed** (not notarized), so macOS quarantines the download and Gatekeeper
+blocks the first launch. Clear it once with a single command:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/OCPP DebugKit Studio.app"
+```
+
+Prefer not to use the Terminal? Double-click the app, and when macOS refuses, open
+**System Settings → Privacy & Security** and click **Open Anyway**, then launch it
+again. The ad-hoc signature is what lets the app run once unquarantined;
+notarization — which would remove this step entirely — is a deliberate tradeoff
+we've deferred.
+
+### Linux
+
+Extract the `.tar.gz` and run the `studio` binary. Requires GTK 4 (`libgtk-4`,
+`libwebkitgtk-6.0`).
 
 Studio is pre-1.0 (0.x) while Zig, the Native SDK, and the toolkit conformance
 reference are all pre-1.0 — see the [roadmap](ROADMAP.md).
