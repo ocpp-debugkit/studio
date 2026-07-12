@@ -22,9 +22,10 @@ criticals raise OS notifications live (#60, ADR-0011) — all **in-runner**
 publishes both to a GitHub release (see [RELEASING.md](RELEASING.md)). The
 automation smoke now **drives** the GUI (#71) — clicking the replay transport,
 a filter facet, and the Live tab, asserting the semantics tree after each and
-screenshotting the inspector + live surfaces. Remaining: the frozen conformance
-contract (#72), release-ready docs (#73), and the v0.5.0 cut (#74). The menu-bar
-monitor and notarization are post-0.5; see [ROADMAP.md](ROADMAP.md).
+screenshotting the inspector + live surfaces. The conformance contract is frozen
+as `contract-v1` (#72, [docs/CONTRACT.md](docs/CONTRACT.md), ADR-0012). Remaining:
+release-ready docs (#73) and the v0.5.0 cut (#74). The menu-bar monitor and
+notarization are post-0.5; see [ROADMAP.md](ROADMAP.md).
 
 ## What's done
 
@@ -193,4 +194,4 @@ live inspector surface with notifications (#54–#60) — is landed.
 | `ui` (native views) | ✅ S3 inspector (#27–#32) + replay transport (#44) + live-capture view (#59) + live notifications (#60) |
 | `capture` (live proxy) | ✅ S5: WS transport (#54) + frame decode (#55) + MITM proxy (#56) + live notifications (#60) |
 | `cli` (headless) | ✅ inspect/report/diff/anonymize/ci/scenario (#45) + live `capture` (#57) |
-| `conformance` | ✅ done for S2 (15/15, `contract-v1`) |
+| `conformance` | ✅ S2 (15/15) + frozen `contract-v1` (#72, docs/CONTRACT.md) |

@@ -20,7 +20,7 @@ Studio is one of two independent products under the OCPP DebugKit umbrella:
 | [`@ocpp-debugkit/toolkit`](https://github.com/ocpp-debugkit/toolkit) | TypeScript | npm library · CLI · web app | The library and CI brain — parse, analyze, and report OCPP traces anywhere |
 | **`ocpp-debugkit/studio`** (this repo) | Zig | native desktop app | The instrument on the bench — live capture, native performance, OS integration |
 
-The two share **no code**. They meet only at a *conformance contract*: the same trace format, the same normalized event model, the same failure taxonomy, and the same scenario fixtures. A trace captured in Studio opens in the toolkit's web inspector, and vice versa — two independent implementations, one format. See [ADR-0001](docs/adr/0001-independent-implementation.md).
+The two share **no code**. They meet only at a *conformance contract*: the same trace format, the same normalized event model, the same failure taxonomy, and the same scenario fixtures. A trace captured in Studio opens in the toolkit's web inspector, and vice versa — two independent implementations, one format, checked in CI on every change. See **[the conformance contract](docs/CONTRACT.md)** (`contract-v1`) and [ADR-0001](docs/adr/0001-independent-implementation.md).
 
 ## What it will do
 
