@@ -13,13 +13,14 @@ which builds and publishes a GitHub release with two artifacts:
 | --- | --- | --- |
 | macOS | `studio-X.Y.Z-macos-ReleaseFast.dmg` | A `.app` bundle, **ad-hoc signed** |
 | Linux | `studio-X.Y.Z-linux-ReleaseFast.tar.gz` | The `studio` binary + resources |
+| both | `SHA256SUMS` | Checksums of both packages; the installer verifies against it |
 
-**macOS Gatekeeper:** the ad-hoc build is not notarized, so macOS quarantines the
-download and blocks first launch. Users clear it once with
-`xattr -dr com.apple.quarantine "/Applications/OCPP DebugKit Studio.app"` (or
-*System Settings → Privacy & Security → Open Anyway*) — see the README. This is a
-deliberate tradeoff; notarization, which removes the prompt, needs an Apple
-Developer identity and is out of scope for now.
+**macOS install:** users install with the one-line installer
+([`scripts/install-macos.sh`](scripts/install-macos.sh); see the README), which
+downloads the latest DMG, verifies its SHA-256 against `SHA256SUMS`, installs the
+app, and clears the download quarantine. The build is ad-hoc signed, not notarized
+(a deliberate tradeoff) — installing via `curl` sidesteps the browser-download
+quarantine, so the first launch is clean.
 
 ## Cutting a release
 

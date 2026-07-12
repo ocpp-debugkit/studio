@@ -84,6 +84,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum studio-* | tee SHA256SUMS
       - name: Publish GitHub release
         # ref_name / repository come in through the environment, never
         # interpolated into the script body, so a crafted tag can't inject shell.
