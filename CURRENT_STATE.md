@@ -4,8 +4,8 @@
 
 ## Current version
 
-`0.5.1` — macOS packaging patch (app bundle named `OCPP DebugKit Studio.app`,
-Gatekeeper install docs); the first public release was `0.5.0`.
+`0.5.2` — one-line macOS installer (`curl … | bash`) + published `SHA256SUMS`.
+Earlier: `0.5.1` (macOS app-bundle naming), `0.5.0` (first public release).
 
 ## Active milestone
 
