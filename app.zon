@@ -6,7 +6,7 @@
     .version = "0.0.0",
     .icons = .{"assets/icon.png"},
     .platforms = .{"macos"},
-    .permissions = .{ "view", "command" },
+    .permissions = .{ "view", "command", "notifications" },
     .capabilities = .{ "native_views", "gpu_surfaces" },
     .shell = .{
         .windows = .{

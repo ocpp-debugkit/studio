@@ -25,7 +25,7 @@ const window_height: f32 = 800;
 const window_min_width: f32 = 900;
 const window_min_height: f32 = 560;
 
-const app_permissions = [_][]const u8{ native_sdk.security.permission_command, native_sdk.security.permission_view };
+const app_permissions = [_][]const u8{ native_sdk.security.permission_command, native_sdk.security.permission_view, native_sdk.security.permission_notifications };
 const shell_views = [_]native_sdk.ShellView{
     .{ .label = canvas_label, .kind = .gpu_surface, .fill = true, .role = "Studio canvas", .accessibility_label = "OCPP DebugKit Studio", .gpu_backend = .metal, .gpu_pixel_format = .bgra8_unorm, .gpu_present_mode = .timer, .gpu_alpha_mode = .@"opaque", .gpu_color_space = .srgb, .gpu_vsync = true },
 };
@@ -61,7 +61,8 @@ const max_trace_file_bytes: usize = 256 * 1024 * 1024;
 /// The effects-capable update: runs the pure `workspace.update`, then issues the
 /// live-capture effects — on start, spawn the capture worker (`studio capture …
 /// --ndjson`), whose stdout NDJSON lines stream back as `capture_line` Msgs; on
-/// stop, cancel it. See ADR-0009.
+/// stop, cancel it (ADR-0009) — and fires any OS notifications the live detector
+/// queued this turn (ADR-0011).
 fn updateFx(model: *Model, msg: Msg, fx: *InspectorApp.Effects) void {
     workspace.update(model, msg);
     switch (msg) {
@@ -83,6 +84,18 @@ fn updateFx(model: *Model, msg: Msg, fx: *InspectorApp.Effects) void {
         .stop_capture => fx.cancel(model.live.key),
         else => {},
     }
+    // A critical live failure queues an OS notification (workspace.zig decides;
+    // deduped per code per session). The effects channel exposes no notification
+    // verb, so reach the loop-thread-bound platform services directly (ADR-0011).
+    // Fire only when a notifier is present — a null-services build (tests / null
+    // platform) stays a silent no-op — then clear the queue regardless (bounding
+    // it) so a serviceless build can't accumulate.
+    if (fx.services) |services| {
+        for (model.pendingNotifications()) |n| {
+            services.showNotification(.{ .title = n.title(), .body = n.body() }) catch {};
+        }
+    }
+    model.clearNotifications();
 }
 
 pub fn main(init: std.process.Init) !void {

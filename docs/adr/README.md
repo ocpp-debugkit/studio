@@ -20,3 +20,4 @@ supersedes the old one rather than editing history.
 | [0008](0008-websocket-transport.md) | WebSocket transport: a hand-rolled RFC 6455 subset | Accepted |
 | [0009](0009-live-capture-effects-channel.md) | Live-capture effects channel (`update_fx` + `fx.spawn`) | Accepted |
 | [0010](0010-live-proxy-transport-concurrency.md) | Live-proxy transport & concurrency | Accepted |
+| [0011](0011-live-notification-services.md) | Live-capture notifications via the effects-bound platform services | Accepted |
