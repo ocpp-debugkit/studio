@@ -8,6 +8,18 @@ reference are all pre-1.0, minor (0.x) releases may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **macOS one-line installer** —
+  `curl -fsSL https://raw.githubusercontent.com/ocpp-debugkit/studio/main/scripts/install-macos.sh | bash`
+  downloads the latest release, verifies its SHA-256, installs the app to
+  Applications, and opens it. Releases now publish a `SHA256SUMS` checksums asset.
+
+### Changed
+
+- The README macOS install is now the one-liner; the manual download / quarantine
+  instructions were removed.
+
 ## [0.5.1] — 2026-07-12
 
 ### Changed
