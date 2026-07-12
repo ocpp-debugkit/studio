@@ -1,0 +1,91 @@
+name: Release
+
+# Cut a release when a v* tag is pushed: build the macOS (.dmg, ad-hoc signed)
+# and Linux (.tar.gz) packages via `native package`, then publish a GitHub
+# release with both artifacts attached. See RELEASING.md for the runbook.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: package (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: macos
+            build_flags: ""
+            package_flags: "--signing adhoc"
+            artifact: "zig-out/package/*.dmg"
+          - os: ubuntu-latest
+            target: linux
+            build_flags: "-Dplatform=linux"
+            package_flags: ""
+            artifact: "zig-out/package/*.tar.gz"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install GTK (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
+      - name: Install Native SDK CLI
+        run: npm install -g @native-sdk/cli@0.4.1
+      - name: Doctor (strict, macOS)
+        if: runner.os == 'macOS'
+        run: native doctor --strict
+      - name: Doctor (Linux)
+        if: runner.os == 'Linux'
+        run: native doctor
+      - name: Build release binary
+        run: native build ${{ matrix.build_flags }}
+      - name: Package
+        run: native package --target ${{ matrix.target }} ${{ matrix.package_flags }} --archive
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-${{ matrix.target }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload assets
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish GitHub release
+        # ref_name / repository come in through the environment, never
+        # interpolated into the script body, so a crafted tag can't inject shell.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$REPO" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag
