@@ -8,8 +8,10 @@ reference are all pre-1.0, minor (0.x) releases may include breaking changes.
 
 ## [Unreleased]
 
-The upcoming **0.5.0** — Studio's first packaged, signed public release,
-assembled across milestones S0–S5. Highlights:
+## [0.5.0] — 2026-07-12
+
+Studio's first packaged, signed public release, assembled across milestones
+S0–S5. Highlights:
 
 ### Added
 
@@ -51,4 +53,5 @@ assembled across milestones S0–S5. Highlights:
 - TLS (`wss://`) live capture, a menu-bar monitor, and interactive open
   (dialog / drag-drop) are planned for later releases.
 
-[Unreleased]: https://github.com/ocpp-debugkit/studio/commits/main
+[Unreleased]: https://github.com/ocpp-debugkit/studio/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ocpp-debugkit/studio/releases/tag/v0.5.0

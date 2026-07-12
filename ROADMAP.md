@@ -14,7 +14,7 @@ the stable part.
 | **S3** | 0.2.0 | Inspector UI | ✅ Complete |
 | **S4** | 0.3.0 | Analysis parity+ | ✅ Complete |
 | **S5** | 0.4.0 | Live capture ⭐ | Planned |
-| **S6** | 0.5.0 | Public release & launch | Planned |
+| **S6** | 0.5.0 | Public release & launch | ✅ Released |
 
 ## Versioning
 

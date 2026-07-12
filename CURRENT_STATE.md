@@ -4,7 +4,7 @@
 
 ## Current version
 
-`0.0.0` — pre-release foundation (unreleased).
+`0.5.0` — first public release.
 
 ## Active milestone
 
@@ -16,8 +16,8 @@ inspector through the effects channel (#58, ADR-0009), and explicit-fault
 criticals raise OS notifications live (#60, ADR-0011) — all **in-runner**
 (`update_fx` + `fx.spawn` + the effects-bound platform services), no runner-eject.
 
-**S6 — public release & launch (0.5.0): in progress.** Packaging is wired
-(#70) — `native package` builds a macOS `.app` (ad-hoc `.dmg`) and a Linux
+**S6 — public release & launch (0.5.0): complete — released.** Packaging is
+wired (#70) — `native package` builds a macOS `.app` (ad-hoc `.dmg`) and a Linux
 `.tar.gz`, and a tag-triggered [release workflow](.github/workflows/release.yml)
 publishes both to a GitHub release (see [RELEASING.md](RELEASING.md)). The
 automation smoke now **drives** the GUI (#71) — clicking the replay transport,
@@ -25,9 +25,11 @@ a filter facet, and the Live tab, asserting the semantics tree after each and
 screenshotting the inspector + live surfaces. The conformance contract is frozen
 as `contract-v1` (#72, [docs/CONTRACT.md](docs/CONTRACT.md), ADR-0012). The docs
 are release-ready (#73): the README is present-tense with install / usage and a
-live inspector screenshot, and a [CHANGELOG](CHANGELOG.md) stages the 0.5.0 notes.
-Remaining: the v0.5.0 cut (#74). The menu-bar monitor and notarization are
-post-0.5; see [ROADMAP.md](ROADMAP.md).
+live inspector screenshot, and a [CHANGELOG](CHANGELOG.md) records the 0.5.0
+notes. **v0.5.0 is cut and published (#74)** — the tag drives the release
+workflow, which builds and attaches the macOS + Linux packages. Next themes
+(menu-bar monitor, notarization, TLS, 2.0.1) are post-0.5; see
+[ROADMAP.md](ROADMAP.md).
 
 ## What's done
 
