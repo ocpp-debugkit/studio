@@ -23,9 +23,11 @@ publishes both to a GitHub release (see [RELEASING.md](RELEASING.md)). The
 automation smoke now **drives** the GUI (#71) — clicking the replay transport,
 a filter facet, and the Live tab, asserting the semantics tree after each and
 screenshotting the inspector + live surfaces. The conformance contract is frozen
-as `contract-v1` (#72, [docs/CONTRACT.md](docs/CONTRACT.md), ADR-0012). Remaining:
-release-ready docs (#73) and the v0.5.0 cut (#74). The menu-bar monitor and
-notarization are post-0.5; see [ROADMAP.md](ROADMAP.md).
+as `contract-v1` (#72, [docs/CONTRACT.md](docs/CONTRACT.md), ADR-0012). The docs
+are release-ready (#73): the README is present-tense with install / usage and a
+live inspector screenshot, and a [CHANGELOG](CHANGELOG.md) stages the 0.5.0 notes.
+Remaining: the v0.5.0 cut (#74). The menu-bar monitor and notarization are
+post-0.5; see [ROADMAP.md](ROADMAP.md).
 
 ## What's done
 
