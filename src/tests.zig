@@ -576,3 +576,148 @@ test "the replay transport steps over the filtered set, skipping hidden events" 
     try testing.expectEqual(types.MessageType.call_result, model.activeTrace().?.events[second_sel].message_type);
     try testing.expect(second_sel > first_sel);
 }
+
+// --- live-capture surface (#59 pt2) ----------------------------------------
+//
+// Drive the live surface through the same typed dispatch the runtime uses: the
+// controls are pressed via `msgForPointer`, and streamed events arrive as the
+// `capture_line` Msgs the worker's stdout produces (see proxy.zig / ADR-0009).
+
+/// One NDJSON event line as the capture worker emits it, dispatched at the
+/// current session key.
+fn streamLine(model: *Model, line: []const u8) void {
+    workspace.update(model, .{ .capture_line = .{ .key = model.live.key, .line = line } });
+}
+
+test "the empty state's Live capture button switches to the live surface" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    // From the empty workspace, "Live capture" opens the live surface.
+    var tree = try buildTree(arena, &model);
+    const live_btn = try expectByText(tree.root, .button, "Live capture");
+    main.update(&model, tree.msgForPointer(live_btn.id, .up).?);
+    try testing.expectEqual(workspace.Surface.live, model.surface);
+
+    // The live surface shows its two endpoint fields and the Start control.
+    tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .button, "Start capture");
+    try testing.expect(findKind(tree.root, .text_field) != null);
+    _ = try expectByText(tree.root, .text, "Ready to capture");
+}
+
+test "the live surface starts a capture, streams events, and toggles Start/Stop" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .show_live);
+
+    // Idle: Start is present, Stop is not, and the empty-state note shows.
+    var tree = try buildTree(arena, &model);
+    const start = try expectByText(tree.root, .button, "Start capture");
+    try testing.expect(findByText(tree.root, .button, "Stop") == null);
+
+    // Press Start (enabled by the seeded default endpoints): status flips and the
+    // button becomes Stop.
+    main.update(&model, tree.msgForPointer(start.id, .up).?);
+    try testing.expectEqual(workspace.CaptureStatus.capturing, model.live.status);
+    tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .button, "Stop");
+    _ = try expectByText(tree.root, .text, "Capturing\u{2026}");
+
+    // Stream a BootNotification exchange: the live timeline renders it and the
+    // status bar counts it.
+    streamLine(&model, "{\"timestamp\":1705312800000,\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m1\",\"BootNotification\",{}]}");
+    streamLine(&model, "{\"timestamp\":1705312800500,\"direction\":\"CSMS_TO_CS\",\"message\":[3,\"m1\",{\"status\":\"Accepted\"}]}");
+    tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "BootNotification");
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), "2 events") != null);
+
+    // Press Stop.
+    const stop = try expectByText(tree.root, .button, "Stop");
+    main.update(&model, tree.msgForPointer(stop.id, .up).?);
+    try testing.expectEqual(workspace.CaptureStatus.stopped, model.live.status);
+}
+
+test "the live surface surfaces detected failures as the stream arrives" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .show_live);
+    workspace.update(&model, .start_capture);
+
+    // The Authorize Call alone: no authorization failure yet (the response that
+    // would reject it hasn't arrived).
+    streamLine(&model, "{\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m1\",\"Authorize\",{\"idTag\":\"TAG-BAD\"}]}");
+    var tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "Authorize"); // the event is on the timeline
+    try testing.expect(findByText(tree.root, .text, "FAILED_AUTHORIZATION") == null);
+
+    // The Invalid response arrives → FAILED_AUTHORIZATION surfaces in the live
+    // failure panel without leaving the surface.
+    streamLine(&model, "{\"direction\":\"CSMS_TO_CS\",\"message\":[3,\"m1\",{\"idTagInfo\":{\"status\":\"Invalid\"}}]}");
+    tree = try buildTree(arena, &model);
+    _ = try expectByText(tree.root, .text, "FAILED_AUTHORIZATION");
+}
+
+test "the live timeline stays viewport-sized under a busy stream" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+    workspace.update(&model, .show_live);
+    workspace.update(&model, .start_capture);
+
+    // A steady stream of Heartbeat exchanges — 500 events, far past a viewport.
+    // The timeline window derives from the viewport, not the event count.
+    var i: usize = 0;
+    while (i < 250) : (i += 1) {
+        streamLine(&model, "{\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m\",\"Heartbeat\",{}]}");
+        streamLine(&model, "{\"direction\":\"CSMS_TO_CS\",\"message\":[3,\"m\",{}]}");
+    }
+    try testing.expectEqual(@as(usize, 500), model.live.trace.events.len);
+
+    const tree = try buildTree(arena_state.allocator(), &model);
+    try testing.expect(std.mem.indexOf(u8, statusText(tree), "500 events") != null);
+    // No materialization of off-screen rows: the whole tree stays viewport-sized.
+    try testing.expect(countNodes(tree.root) < 1024);
+}
+
+test "the live-capture surface passes the accessibility sweep" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const sweep = canvas.a11y.A11yAuditSweepOptions{
+        .min_size = .{ .width = 900, .height = 560 },
+        .default_size = .{ .width = 1200, .height = 800 },
+    };
+
+    var model = Model{ .backing = testing.allocator };
+    defer model.deinitAll();
+
+    // Idle: the control strip (editable fields + Start) and the empty-state note.
+    workspace.update(&model, .show_live);
+    var tree = try buildTree(arena, &model);
+    try canvas.expectA11yAuditSweepClean(testing.allocator, tree.root, sweep);
+
+    // Capturing: the fields go read-only, and a streamed failing exchange lights
+    // up the timeline, failure panel, and detail pane over the live trace.
+    workspace.update(&model, .start_capture);
+    streamLine(&model, "{\"direction\":\"CS_TO_CSMS\",\"message\":[2,\"m1\",\"Authorize\",{\"idTag\":\"BAD\"}]}");
+    streamLine(&model, "{\"direction\":\"CSMS_TO_CS\",\"message\":[3,\"m1\",{\"idTagInfo\":{\"status\":\"Invalid\"}}]}");
+    workspace.update(&model, .{ .select_event = 0 });
+    tree = try buildTree(arena, &model);
+    try canvas.expectA11yAuditSweepClean(testing.allocator, tree.root, sweep);
+}
