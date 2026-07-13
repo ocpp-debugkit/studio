@@ -77,3 +77,20 @@ jobs:
           name: gui-screenshots
           path: .zig-cache/native-sdk-automation/screenshot-*.png
           if-no-files-found: ignore
+
+  scripts:
+    name: scripts (pure ASCII)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Assert scripts are pure ASCII
+        # A `curl | bash` installer must run on the oldest bundled bash (macOS
+        # ships 3.2.57): a non-ASCII byte next to a $variable under `set -u` folds
+        # into the variable name and aborts the install. Keep every script ASCII.
+        run: |
+          bad="$(LC_ALL=C perl -ne 'print "$ARGV:$.: $_" if /[^\x00-\x7F]/; close ARGV if eof' scripts/*.sh)"
+          if [ -n "$bad" ]; then
+            printf '%s\n' "$bad"
+            echo "::error::scripts/*.sh must be pure ASCII (see lines above)"
+            exit 1
+          fi

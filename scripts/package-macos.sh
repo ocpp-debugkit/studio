@@ -7,8 +7,8 @@
 # because the SDK's codesign invocation does not quote the bundle path: a path
 # with spaces splits into multiple arguments and ad-hoc signing silently fails,
 # leaving an unsigned bundle (which will not launch on Apple silicon). Signing
-# the space-free name and renaming afterwards keeps the seal intact — the ad-hoc
-# signature covers bundle contents, not the directory name — and we build the
+# the space-free name and renaming afterwards keeps the seal intact - the ad-hoc
+# signature covers bundle contents, not the directory name - and we build the
 # .dmg ourselves so it wraps the renamed, signed bundle.
 #
 # Usage: scripts/package-macos.sh <version>   (run after `native build`)

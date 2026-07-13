@@ -43,7 +43,7 @@ curl -fSL --progress-bar -o "$tmp/$name" "$base/$name" || fail "download failed"
 
 note "Verifying SHA-256"
 got="$(shasum -a 256 "$tmp/$name" | awk '{ print $1 }')"
-[ "$got" = "$sha" ] || fail "checksum mismatch — expected $sha, got $got (not installing)"
+[ "$got" = "$sha" ] || fail "checksum mismatch - expected $sha, got $got (not installing)"
 
 note "Mounting the disk image"
 mnt="$(hdiutil attach "$tmp/$name" -nobrowse -readonly | grep -o '/Volumes/.*' | head -1)"
@@ -52,7 +52,7 @@ mnt="$(hdiutil attach "$tmp/$name" -nobrowse -readonly | grep -o '/Volumes/.*' |
 sudo=""
 if [ ! -w /Applications ]; then
   sudo="sudo"
-  note "/Applications needs administrator access — you may be prompted for your password"
+  note "/Applications needs administrator access - you may be prompted for your password"
 fi
 
 note "Installing to /Applications"
@@ -66,4 +66,4 @@ $sudo xattr -dr com.apple.quarantine "$dest" 2>/dev/null || true
 
 note "Opening $app"
 open "$dest"
-note "Done — OCPP DebugKit Studio is installed in /Applications."
+note "Done - OCPP DebugKit Studio is installed in /Applications."
