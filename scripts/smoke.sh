@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Automation-driven GUI test: launch the app, wait for its embedded automation
-# server, then DRIVE the headline flows through the automation protocol —
+# server, then DRIVE the headline flows through the automation protocol -
 # clicking real widgets and asserting the rendered semantics tree after each
-# step — and capture deterministic screenshots as artifacts. Portable: uses a
+# step - and capture deterministic screenshots as artifacts. Portable: uses a
 # virtual framebuffer (Xvfb) when available (CI), otherwise runs the window
 # directly (local macOS). The app must be built with -Dautomation=true.
 #
@@ -17,7 +17,7 @@ CANVAS=main-canvas
 SAMPLE=src/ocpp/testdata/normal-session.json
 
 if [ ! -x "$BIN" ]; then
-  echo "smoke: $BIN not found — build first: native build -Dautomation=true" >&2
+  echo "smoke: $BIN not found - build first: native build -Dautomation=true" >&2
   exit 1
 fi
 
@@ -47,7 +47,7 @@ APP_PID=$!
 trap 'kill "$APP_PID" >/dev/null 2>&1 || true' EXIT
 
 # The numeric widget id for the widget whose accessibility name equals $1. Each
-# snapshot line is `widget @w<win>/<view>#<id> role=<r> name="<label>" …`; anchor
+# snapshot line is `widget @w<win>/<view>#<id> role=<r> name="<label>" ...`; anchor
 # on the id in that path so a name never mismatches. Prefer the `snapshot`
 # command's output (a fresh publish); fall back to the dropbox snapshot.txt.
 widget_id() {
@@ -79,7 +79,7 @@ shot() { # capture the canvas to a stably-named PNG artifact ($1)
 # Block until the runtime publishes ready=true (or fail loudly on timeout).
 native automate wait --timeout-ms 60000
 
-# 1. The CLI load → parse → render path: launched with the sample trace, the app
+# 1. The CLI load -> parse -> render path: launched with the sample trace, the app
 #    opens straight on the overview. Assertions read the semantics snapshot
 #    (GPU-independent), so they hold under software GL too.
 native automate assert --timeout-ms 30000 \
@@ -103,7 +103,7 @@ click 'Clear'
 native automate assert --absent --timeout-ms 30000 'of 22 events'
 
 # 4. Switch to the live-capture surface: its control strip renders (endpoints +
-#    start control + the idle note). No capture is started — that would spawn a
+#    start control + the idle note). No capture is started - that would spawn a
 #    real proxy subprocess.
 click 'Live'
 native automate assert --timeout-ms 30000 'Start capture' 'Ready to capture' 'Listen'
@@ -112,4 +112,4 @@ shot live
 # 5. No runtime/dispatch errors surfaced across the whole run.
 native automate assert --absent 'error event='
 
-echo "smoke: ok — automation drove the inspector, filter, and live surface"
+echo "smoke: ok - automation drove the inspector, filter, and live surface"
