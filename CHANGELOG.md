@@ -8,6 +8,20 @@ reference are all pre-1.0, minor (0.x) releases may include breaking changes.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-22
+
+### Fixed
+
+- `METER_VALUE_ANOMALY` no longer false-positives on charge points that report
+  more than one measurand per sample, or on multi-connector stations. Meter
+  readings are now bucketed by (connectorId, measurand, phase, unit, location),
+  and the monotonic and non-negative checks apply only to cumulative
+  `Energy.*.Register` measurands (OCPP 1.6 section 7.28). Reported by shiv3.
+- `STATUS_TRANSITION_VIOLATION` no longer false-positives on multi-connector
+  stations. Connector status is tracked per connector (connectorId 0, the whole
+  charge point, is its own series), so a notification from one connector is not
+  compared against another's.
+
 ## [0.5.2] — 2026-07-13
 
 ### Added

@@ -3,7 +3,7 @@
     .name = "studio",
     .display_name = "OCPP DebugKit Studio",
     .description = "Native desktop debugger for OCPP charging sessions.",
-    .version = "0.5.2",
+    .version = "0.5.3",
     .icons = .{"assets/icon.png"},
     .platforms = .{"macos"},
     .permissions = .{ "view", "command", "notifications" },
