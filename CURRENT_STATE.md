@@ -7,6 +7,14 @@
 `0.5.2` — one-line macOS installer (`curl … | bash`) + published `SHA256SUMS`.
 Earlier: `0.5.1` (macOS app-bundle naming), `0.5.0` (first public release).
 
+**Pending (unreleased):** detection correctness fix in `src/ocpp/detection.zig`,
+mirroring the toolkit fixes shiv3 found (toolkit#127/#128, published as 0.4.1 and
+0.4.2). `METER_VALUE_ANOMALY` now buckets readings by (connectorId, measurand,
+phase, unit, location) and checks only cumulative `Energy.*.Register`;
+`STATUS_TRANSITION_VIOLATION` tracks previous status per connectorId. The 15
+conformance goldens are unchanged (the fixtures are single-connector), so the
+contract still holds; two regression tests added.
+
 ## Active milestone
 
 **S5 — Live capture (0.4.0): complete.** S0–S5 are done. S5's flagship — a live

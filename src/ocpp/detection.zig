@@ -172,6 +172,12 @@ fn payloadStr(payload: std.json.Value, key: []const u8) ?[]const u8 {
     return if (v == .string) v.string else null;
 }
 
+fn payloadInt(payload: std.json.Value, key: []const u8) ?i64 {
+    if (payload != .object) return null;
+    const v = payload.object.get(key) orelse return null;
+    return if (v == .integer) v.integer else null;
+}
+
 fn inList(list: []const []const u8, value: []const u8) bool {
     for (list) |item| {
         if (std.mem.eql(u8, item, value)) return true;
@@ -575,28 +581,38 @@ fn detectUnexpectedStart(arena: std.mem.Allocator, events: []const Event, list: 
 // Rule 8: STATUS_TRANSITION_VIOLATION
 // ---------------------------------------------------------------------------
 
+const PrevStatus = struct { status: []const u8, event: Event };
+
 /// An illegal connector status transition per the OCPP 1.6 state model.
+///
+/// Each connector has an independent status machine, so a transition is only
+/// valid or invalid relative to the same connector's previous status. Previous
+/// status is tracked per connectorId; connectorId 0 refers to the charge point
+/// as a whole (OCPP 1.6) and forms its own series, and a missing connectorId is
+/// bucketed under "unknown". Comparing statuses across connectors produced
+/// false violations on multi-connector stations.
 fn detectStatusTransitionViolation(arena: std.mem.Allocator, events: []const Event, list: *FailureList) !void {
-    var prev_status: ?[]const u8 = null;
-    var prev_event: ?Event = null;
+    var prev_by_connector = std.StringHashMap(PrevStatus).init(arena);
 
     for (events) |event| {
         const status = statusNotificationStatus(event) orelse continue;
         if (!inList(&valid_connector_statuses, status)) continue;
 
-        if (prev_status) |ps| if (prev_event) |pe| {
-            if (!isValidTransition(ps, status)) {
+        const conn = payloadInt(event.payload, "connectorId");
+        const conn_key = if (conn) |c| try std.fmt.allocPrint(arena, "{d}", .{c}) else "unknown";
+
+        if (prev_by_connector.get(conn_key)) |prev| {
+            if (!isValidTransition(prev.status, status)) {
                 const desc = try std.fmt.allocPrint(
                     arena,
                     "Connector status transition from \"{s}\" to \"{s}\" is not a valid OCPP 1.6 transition (messageId: {s})",
-                    .{ ps, status, event.message_id },
+                    .{ prev.status, status, event.message_id },
                 );
-                try add(arena, list, .status_transition_violation, desc, try ids2(arena, pe.id, event.id));
+                try add(arena, list, .status_transition_violation, desc, try ids2(arena, prev.event.id, event.id));
             }
-        };
+        }
 
-        prev_status = status;
-        prev_event = event;
+        try prev_by_connector.put(conn_key, .{ .status = status, .event = event });
     }
 }
 
@@ -775,14 +791,39 @@ fn detectHeartbeatIntervalViolation(arena: std.mem.Allocator, events: []const Ev
 
 const Reading = struct { event_id: []const u8, value: f64 };
 
-/// Negative or non-monotonic (decreasing) meter readings within a transaction.
+/// Cumulative energy registers, the only measurands with a monotonic,
+/// non-negative invariant per OCPP 1.6 section 7.28.
+const cumulative_measurands = [_][]const u8{
+    "Energy.Active.Import.Register",
+    "Energy.Reactive.Import.Register",
+    "Energy.Active.Export.Register",
+    "Energy.Reactive.Export.Register",
+};
+
+/// OCPP 1.6: when `measurand` is absent it defaults to Energy.Active.Import.Register.
+const default_measurand = "Energy.Active.Import.Register";
+
+/// A cumulative energy register that decreases, or is negative, within a
+/// transaction.
+///
+/// Only the cumulative `Energy.*.Register` measurands are monotonic and
+/// non-negative (OCPP 1.6 section 7.28). Other measurands (Power, Current,
+/// Voltage, Temperature, SoC, ...) legitimately rise and fall, so this rule
+/// ignores them. Readings are bucketed by (connectorId, measurand, phase, unit,
+/// location) so independent series never contaminate each other's monotonicity,
+/// for example a constant Power sample interleaved with a rising Energy
+/// register, or two connectors' meters on the same transaction.
 fn detectMeterValueAnomaly(arena: std.mem.Allocator, sessions: []const Session, list: *FailureList) !void {
     for (sessions) |session| {
         const tx = session.transaction_id orelse continue;
 
-        var readings: std.ArrayList(Reading) = .empty;
+        // std.StringArrayHashMap was removed in Zig 0.16, so keep insertion
+        // order explicitly: `index` maps a bucket key to its slot in `order`.
+        var order: std.ArrayList(std.ArrayList(Reading)) = .empty;
+        var index = std.StringHashMap(usize).init(arena);
         for (session.events) |event| {
             if (!isCall(event, "MeterValues") or event.payload != .object) continue;
+            const conn = payloadInt(event.payload, "connectorId");
             const meter_value = event.payload.object.get("meterValue") orelse continue;
             if (meter_value != .array) continue;
             for (meter_value.array.items) |mv| {
@@ -791,6 +832,8 @@ fn detectMeterValueAnomaly(arena: std.mem.Allocator, sessions: []const Session, 
                 if (sampled != .array) continue;
                 for (sampled.array.items) |sv| {
                     if (sv != .object) continue;
+                    const measurand = payloadStr(sv, "measurand") orelse default_measurand;
+                    if (!inList(&cumulative_measurands, measurand)) continue;
                     const raw = sv.object.get("value") orelse continue;
                     const value: ?f64 = switch (raw) {
                         .string => |s| std.fmt.parseFloat(f64, s) catch null,
@@ -798,34 +841,48 @@ fn detectMeterValueAnomaly(arena: std.mem.Allocator, sessions: []const Session, 
                         .float => |f| f,
                         else => null,
                     };
-                    if (value) |v| try readings.append(arena, .{ .event_id = event.id, .value = v });
+                    const v = value orelse continue;
+                    const phase = payloadStr(sv, "phase") orelse "";
+                    const unit = payloadStr(sv, "unit") orelse "";
+                    const location = payloadStr(sv, "location") orelse "";
+                    const key = if (conn) |c|
+                        try std.fmt.allocPrint(arena, "{d}|{s}|{s}|{s}|{s}", .{ c, measurand, phase, unit, location })
+                    else
+                        try std.fmt.allocPrint(arena, "unknown|{s}|{s}|{s}|{s}", .{ measurand, phase, unit, location });
+                    const gop = try index.getOrPut(key);
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = order.items.len;
+                        try order.append(arena, .empty);
+                    }
+                    try order.items[gop.value_ptr.*].append(arena, .{ .event_id = event.id, .value = v });
                 }
             }
         }
-        if (readings.items.len == 0) continue;
 
-        for (readings.items) |reading| {
-            if (reading.value < 0) {
-                const desc = try std.fmt.allocPrint(
-                    arena,
-                    "Negative meter value detected: {d} in session {s} (transaction {d})",
-                    .{ reading.value, session.session_id, tx },
-                );
-                try add(arena, list, .meter_value_anomaly, desc, try arena.dupe([]const u8, &[_][]const u8{reading.event_id}));
+        for (order.items) |readings| {
+            for (readings.items) |reading| {
+                if (reading.value < 0) {
+                    const desc = try std.fmt.allocPrint(
+                        arena,
+                        "Negative meter value detected: {d} in session {s} (transaction {d})",
+                        .{ reading.value, session.session_id, tx },
+                    );
+                    try add(arena, list, .meter_value_anomaly, desc, try arena.dupe([]const u8, &[_][]const u8{reading.event_id}));
+                }
             }
-        }
 
-        var i: usize = 1;
-        while (i < readings.items.len) : (i += 1) {
-            const prev = readings.items[i - 1];
-            const curr = readings.items[i];
-            if (curr.value < prev.value) {
-                const desc = try std.fmt.allocPrint(
-                    arena,
-                    "Non-monotonic meter reading: value decreased from {d} to {d} in session {s} (transaction {d})",
-                    .{ prev.value, curr.value, session.session_id, tx },
-                );
-                try add(arena, list, .meter_value_anomaly, desc, try ids2(arena, prev.event_id, curr.event_id));
+            var i: usize = 1;
+            while (i < readings.items.len) : (i += 1) {
+                const prev = readings.items[i - 1];
+                const curr = readings.items[i];
+                if (curr.value < prev.value) {
+                    const desc = try std.fmt.allocPrint(
+                        arena,
+                        "Non-monotonic meter reading: value decreased from {d} to {d} in session {s} (transaction {d})",
+                        .{ prev.value, curr.value, session.session_id, tx },
+                    );
+                    try add(arena, list, .meter_value_anomaly, desc, try ids2(arena, prev.event_id, curr.event_id));
+                }
             }
         }
     }
@@ -1121,6 +1178,42 @@ test "STATUS_TRANSITION_VIOLATION fires on an illegal transition" {
     try testing.expect(!has(legal, .status_transition_violation));
 }
 
+test "STATUS_TRANSITION_VIOLATION is tracked per connector, not globally" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Interleaved statuses from two connectors must not be compared to each
+    // other: connector 1 goes Charging -> Finishing (valid), connector 2 is
+    // Available. Globally that looks like Available -> Finishing (illegal).
+    const cross = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"n1","StatusNotification",{"connectorId":1,"status":"Charging"}]},
+        \\{"message":[2,"n2","StatusNotification",{"connectorId":2,"status":"Available"}]},
+        \\{"message":[2,"n3","StatusNotification",{"connectorId":1,"status":"Finishing"}]}]}
+    );
+    try testing.expect(!has(cross, .status_transition_violation));
+
+    // A genuine per-connector violation still fires when interleaved: connector
+    // 1 goes Available -> Finishing, which is illegal.
+    const genuine = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"n1","StatusNotification",{"connectorId":1,"status":"Available"}]},
+        \\{"message":[2,"n2","StatusNotification",{"connectorId":2,"status":"Charging"}]},
+        \\{"message":[2,"n3","StatusNotification",{"connectorId":1,"status":"Finishing"}]}]}
+    );
+    try testing.expect(has(genuine, .status_transition_violation));
+
+    // connectorId 0 (the whole charge point) is its own series.
+    const cp = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"n1","StatusNotification",{"connectorId":0,"status":"Available"}]},
+        \\{"message":[2,"n2","StatusNotification",{"connectorId":1,"status":"Available"}]},
+        \\{"message":[2,"n3","StatusNotification",{"connectorId":0,"status":"Finishing"}]}]}
+    );
+    try testing.expect(has(cp, .status_transition_violation));
+}
+
 test "DIAGNOSTICS_FAILURE and FIRMWARE_UPDATE_FAILURE fire on failure statuses" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1247,6 +1340,37 @@ test "METER_VALUE_ANOMALY fires on a decreasing reading" {
         \\{"message":[3,"mv2",{}]}]}
     );
     try testing.expect(!has(increasing, .meter_value_anomaly));
+}
+
+test "METER_VALUE_ANOMALY ignores non-cumulative measurands, checks energy per bucket" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A rising Energy register interleaved with a constant Power sample must not
+    // fire: flattening the two series is the bug this guards against.
+    const rising = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]},
+        \\{"message":[3,"s1",{"transactionId":30}]},
+        \\{"message":[2,"mv1","MeterValues",{"connectorId":1,"transactionId":30,"meterValue":[{"sampledValue":[{"measurand":"Energy.Active.Import.Register","value":"600"},{"measurand":"Power.Active.Import","value":"3000"}]}]}]},
+        \\{"message":[3,"mv1",{}]},
+        \\{"message":[2,"mv2","MeterValues",{"connectorId":1,"transactionId":30,"meterValue":[{"sampledValue":[{"measurand":"Energy.Active.Import.Register","value":"625"},{"measurand":"Power.Active.Import","value":"3000"}]}]}]},
+        \\{"message":[3,"mv2",{}]}]}
+    );
+    try testing.expect(!has(rising, .meter_value_anomaly));
+
+    // A genuinely decreasing Energy register still fires despite the Power sample.
+    const decreasing = try detect(a,
+        \\{"events":[
+        \\{"message":[2,"s1","StartTransaction",{"connectorId":1,"meterStart":0}]},
+        \\{"message":[3,"s1",{"transactionId":31}]},
+        \\{"message":[2,"mv1","MeterValues",{"connectorId":1,"transactionId":31,"meterValue":[{"sampledValue":[{"measurand":"Energy.Active.Import.Register","value":"600"},{"measurand":"Power.Active.Import","value":"3000"}]}]}]},
+        \\{"message":[3,"mv1",{}]},
+        \\{"message":[2,"mv2","MeterValues",{"connectorId":1,"transactionId":31,"meterValue":[{"sampledValue":[{"measurand":"Energy.Active.Import.Register","value":"500"},{"measurand":"Power.Active.Import","value":"3000"}]}]}]},
+        \\{"message":[3,"mv2",{}]}]}
+    );
+    try testing.expect(has(decreasing, .meter_value_anomaly));
 }
 
 test "UNRESPONSIVE_CSMS fires on an unanswered Call" {
